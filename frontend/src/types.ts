@@ -166,3 +166,23 @@ export function fromTopology(t: Topology): { nodes: CanvasNode[]; edges: CanvasE
     })),
   };
 }
+
+/** Mirror of `Section` in `backend/src/concepts.rs`. */
+export interface ConceptSection {
+  heading: string;
+  body: string;
+}
+
+/** Mirror of `ConceptCard` in `backend/src/routes.rs` — the list shape, no bodies. */
+export interface ConceptCard {
+  id: string;
+  title: string;
+  summary: string;
+  scenarios: string[];
+}
+
+/** Mirror of `Concept` in `backend/src/concepts.rs`. */
+export interface Concept extends ConceptCard {
+  sections: ConceptSection[];
+  probes: string[];
+}

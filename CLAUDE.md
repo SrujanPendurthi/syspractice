@@ -43,6 +43,7 @@ backend/src/
   routes.rs      HTTP layer + AppState. Handlers stay thin.
   db.rs          persistence + derived progress. No HTTP types cross this boundary.
   auth.rs        argon2, session tokens, the AuthUser/MaybeUser extractors
+  concepts.rs    the teaching material. Static, structured, tagged by scenario
   error.rs       AppError, and its IntoResponse
   critic.rs      prompt construction + llama-server SSE proxy
   topology.rs    the shared domain contract
@@ -51,6 +52,7 @@ frontend/src/
   App.tsx        AuthProvider + router: /s/<id> Workspace, /login AuthPage, else ProblemList
   useAuth.tsx    the signed-in user, loaded once from /api/auth/me
   AuthPage.tsx   one form, sign-in/register toggle
+  Learn.tsx      concept index and article, /learn and /learn/<id>
   ProblemList.tsx  the problem table, difficulty chips, solved/attempted markers
   Workspace.tsx  owns canvas state, sidebar, session save/load for one scenario
   Canvas.tsx     React Flow only
@@ -109,6 +111,9 @@ llama-server -m <model.gguf> --port 8080
 * **`X-Forwarded-For` is ignored unless `SYSPRACTICE_TRUST_PROXY=1`.** It is caller-supplied: believing it with no proxy in front lets one client vary a header and evade every rate limit. Believing the socket address behind a proxy throttles the whole internet as one client. Both are wrong in opposite directions, so it is a deployment flag rather than a default.
 * **`notes` is capped at 8,000 characters (`MAX_NOTES` in `routes.rs`, `maxLength` on the textarea).** It is pasted verbatim into the critique prompt, and the quota counts requests rather than tokens — uncapped, one request spent 1.5MB of inference for one unit of quota. It is also what keeps the prompt inside the context window.
 * **`memo(CritiquePanel)` needs *every* prop stable, not just the two with comments on them.** `onAdvance` was a plain arrow redefined each render, which defeated the shallow compare completely — the memo did nothing at all from the day the panel was extracted until a test pass found it. `persist` and `advance` are `useCallback` now. Anything new passed to this panel has to be stable through a drag or the optimization silently stops existing again.
+* **The syllabus is `scenarios.rs`, not an invention.** Every concept in `concepts.rs` exists because rubric lines keep asking for it, and each names the scenarios that exercise it. Tests enforce both directions: a concept pointing at a scenario id that does not exist would silently never appear anywhere, and a Hard scenario with nothing to read is a dead end for someone who did not understand their critique. That second test is what found there was no conflict-resolution concept while `file-sync` and `collaborative-editor` both needed one.
+* **Concept content is structured data, not markdown.** The shape is uniform — sections, probes, scenarios — so a parser would buy a dependency and an HTML injection surface and nothing else. `/api/concepts` returns summaries only; bodies come from `/api/concepts/{id}`.
+* **Links out of the workspace are `<a target="_blank">`, never `navigate()`.** Routing away unmounts `Workspace` and takes the diagram, notes and stage with it. That is why signing in is an overlay and why "Read first" opens a tab — the whole point of reading a concept mid-interview is to have it beside the canvas.
 * **Password hashing runs in `spawn_blocking`.** argon2 is deliberately tens of milliseconds of CPU. On an async worker that is a stalled runtime under any concurrency. Login also runs `auth::dummy_verify` when the email matched nothing, so "no such account" and "wrong password" cost the same wall-clock time as well as returning the same string.
 * **`difficulty` and `level` are different axes and neither is a rename of the other.** `Scenario::difficulty` is Easy/Medium/Hard, how hard the problem is. `Level` is Junior/Senior/Staff, who you are being interviewed as, and it filters the rubric via `Scenario::rubric_for`. You can take an Easy problem at Staff level. The critique request's field is `level`; it was called `difficulty` until the problem list needed the other meaning.
 * **Progress is derived, not stored.** `db::list_progress` is a `GROUP BY` over `sessions` — solved means some session for that scenario reached the `bottlenecks` stage. There is no progress table and no migration for it. That is also why `Workspace` persists on stage advance rather than only on Save: without it the list stays empty for anyone who never presses the button. Solved measures that the interview was walked end to end, not that the design was good.
@@ -126,6 +131,8 @@ llama-server -m <model.gguf> --port 8080
 ## Not built yet (PRD scope, deliberately deferred)
 
 Back-of-the-envelope calculator, flashcards, and inline (non-`window.prompt`) label editing. The critique loop was scaffolded end to end first because it is the piece that constrains every other decision.
+
+Next, in order: the discussion tab (posts, comments, votes, optional `scenario_id` tag — needs moderation and rate limits on day one, not after the first spam wave), then 1v1 head-to-head (a match row holding two user ids, one scenario and a deadline; both canvases are ordinary attempts, and grading is one model call over both topologies reusing `Scenario::rubric_for`).
 
 ## Parent repo note
 

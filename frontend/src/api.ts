@@ -1,5 +1,7 @@
 import type {
   AttemptSummary,
+  Concept,
+  ConceptCard,
   Level,
   Scenario,
   ScenarioProgress,
@@ -69,6 +71,19 @@ export const loadAttempt = (id: number) =>
   send(`/api/attempts/${id}`).then(
     json<{ id: number; scenarioId: string; topology: Topology; notes: string; stage: Stage }>,
   );
+
+// --- concepts ---------------------------------------------------------------
+
+export const listConcepts = () => send('/api/concepts').then(json<ConceptCard[]>);
+
+export const loadConcept = (id: string) =>
+  send(`/api/concepts/${encodeURIComponent(id)}`).then(json<Concept>);
+
+/** Empty when signed out, like progress — the syllabus is readable without an account. */
+export const listReads = () => send('/api/reads').then(json<string[]>);
+
+export const markRead = (id: string, read: boolean) =>
+  post(`/api/concepts/${encodeURIComponent(id)}/read`, { read }).then(json<{ read: boolean }>);
 
 // --- accounts ---------------------------------------------------------------
 

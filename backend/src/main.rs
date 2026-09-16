@@ -1,4 +1,5 @@
 mod auth;
+mod concepts;
 mod critic;
 mod db;
 mod error;

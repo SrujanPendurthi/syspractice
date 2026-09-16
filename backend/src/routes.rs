@@ -23,7 +23,7 @@ use crate::critic::Stage;
 use crate::error::AppError;
 use crate::scenarios::Level;
 use crate::topology::Topology;
-use crate::{critic, db, scenarios};
+use crate::{concepts, critic, db, scenarios};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -62,6 +62,10 @@ pub fn router(state: AppState) -> Router {
         .route("/attempts", get(list_attempts).post(create_attempt))
         .route("/attempts/{id}", get(get_attempt).put(update_attempt))
         .route("/critique", post(critique))
+        .route("/concepts", get(list_concepts))
+        .route("/concepts/{id}", get(get_concept))
+        .route("/concepts/{id}/read", post(mark_concept_read))
+        .route("/reads", get(list_reads))
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
@@ -227,6 +231,67 @@ async fn critique(
     // Keep-alive comments stop proxies from closing the connection while the model
     // is still loading the prompt and has emitted no tokens yet.
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+// --- concepts ----------------------------------------------------------------
+
+/// The list carries summaries, not bodies. Twelve full articles is a large payload for a
+/// page that shows one line of each.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConceptCard {
+    id: &'static str,
+    title: &'static str,
+    summary: &'static str,
+    scenarios: &'static [&'static str],
+}
+
+async fn list_concepts() -> impl IntoResponse {
+    let cards: Vec<ConceptCard> = concepts::CONCEPTS
+        .iter()
+        .map(|c| ConceptCard {
+            id: c.id,
+            title: c.title,
+            summary: c.summary,
+            scenarios: c.scenarios,
+        })
+        .collect();
+    Json(cards)
+}
+
+async fn get_concept(Path(id): Path<String>) -> Result<impl IntoResponse, AppError> {
+    Ok(Json(concepts::find(&id).ok_or(AppError::NotFound)?))
+}
+
+#[derive(Deserialize)]
+struct MarkRead {
+    read: bool,
+}
+
+async fn mark_concept_read(
+    State(s): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+    AppJson(body): AppJson<MarkRead>,
+) -> Result<impl IntoResponse, AppError> {
+    // Validated against the static list so the table cannot fill with ids that no longer
+    // exist — the same reason `create_attempt` checks `scenario_id`.
+    concepts::find(&id).ok_or(AppError::NotFound)?;
+    db::set_concept_read(&s.pool, user.id, &id, body.read).await?;
+    Ok(Json(json!({ "read": body.read })))
+}
+
+/// Empty for anonymous visitors rather than a 401, for the same reason as `/api/progress`:
+/// the learn page is browsable without an account.
+async fn list_reads(
+    State(s): State<AppState>,
+    MaybeUser(user): MaybeUser,
+) -> Result<impl IntoResponse, AppError> {
+    let reads = match user {
+        Some(u) => db::list_concept_reads(&s.pool, u.id).await?,
+        None => Vec::new(),
+    };
+    Ok(Json(reads))
 }
 
 // --- accounts ----------------------------------------------------------------

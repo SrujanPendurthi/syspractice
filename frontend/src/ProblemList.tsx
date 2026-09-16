@@ -20,9 +20,10 @@ const ORDER: Difficulty[] = ['easy', 'medium', 'hard'];
 interface ProblemListProps {
   onOpen: (scenarioId: string) => void;
   onSignIn: () => void;
+  onLearn: () => void;
 }
 
-export function ProblemList({ onOpen, onSignIn }: ProblemListProps) {
+export function ProblemList({ onOpen, onSignIn, onLearn }: ProblemListProps) {
   const { user, signOut } = useAuth();
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [progress, setProgress] = useState<ScenarioProgress[]>([]);
@@ -79,6 +80,9 @@ export function ProblemList({ onOpen, onSignIn }: ProblemListProps) {
             syspractice
           </span>
           <span className="text-[13px] text-ink-dim">System design interview drills</span>
+          <button onClick={onLearn} className="text-[13px] text-ink-dim hover:text-ink">
+            Concepts
+          </button>
 
           {user ? (
             <span className="ml-auto flex items-baseline gap-3 text-[13px]">

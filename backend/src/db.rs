@@ -376,6 +376,46 @@ pub async fn critiques_in_last_hour(pool: &SqlitePool, user_id: i64) -> Result<i
     Ok(row.0)
 }
 
+// --- concepts ----------------------------------------------------------------
+
+/// The concept ids this user has marked read. Just the ids: the text is static and comes
+/// from `concepts.rs`, so there is nothing to join to.
+pub async fn list_concept_reads(pool: &SqlitePool, user_id: i64) -> Result<Vec<String>, AppError> {
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT concept_id FROM concept_reads WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_all(pool)
+            .await?;
+    Ok(rows.into_iter().map(|r| r.0).collect())
+}
+
+/// Marking something read twice is not an error, so the insert is idempotent rather than
+/// something every caller has to check first.
+pub async fn set_concept_read(
+    pool: &SqlitePool,
+    user_id: i64,
+    concept_id: &str,
+    read: bool,
+) -> Result<(), AppError> {
+    if read {
+        sqlx::query(
+            "INSERT INTO concept_reads (user_id, concept_id) VALUES (?, ?)
+             ON CONFLICT (user_id, concept_id) DO NOTHING",
+        )
+        .bind(user_id)
+        .bind(concept_id)
+        .execute(pool)
+        .await?;
+    } else {
+        sqlx::query("DELETE FROM concept_reads WHERE user_id = ? AND concept_id = ?")
+            .bind(user_id)
+            .bind(concept_id)
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -565,6 +605,21 @@ mod tests {
             .unwrap();
         assert_eq!(count, 1, "the expired row should have been swept, not accumulated");
         assert!(user_for_token(&pool, b"live").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn marking_a_concept_read_is_idempotent_and_reversible() {
+        let pool = connect(":memory:").await.unwrap();
+        let alice = user(&pool, "alice@example.com").await;
+        let bob = user(&pool, "bob@example.com").await;
+
+        set_concept_read(&pool, alice, "caching", true).await.unwrap();
+        set_concept_read(&pool, alice, "caching", true).await.unwrap();
+        assert_eq!(list_concept_reads(&pool, alice).await.unwrap(), vec!["caching"]);
+        assert!(list_concept_reads(&pool, bob).await.unwrap().is_empty(), "reads are per user");
+
+        set_concept_read(&pool, alice, "caching", false).await.unwrap();
+        assert!(list_concept_reads(&pool, alice).await.unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -4,7 +4,7 @@ import { useEdgesState, useNodesState } from '@xyflow/react';
 import { AuthPage } from './AuthPage';
 import { Canvas } from './Canvas';
 import { CritiquePanel } from './CritiquePanel';
-import { listAttempts, listScenarios, loadAttempt, saveAttempt, updateAttempt, Unauthorized } from './api';
+import { listAttempts, listConcepts, listScenarios, loadAttempt, saveAttempt, updateAttempt, Unauthorized } from './api';
 import { useAuth } from './useAuth';
 import {
   fromTopology,
@@ -17,6 +17,7 @@ import {
   type NodeKind,
   type Scenario,
   type AttemptSummary,
+  type ConceptCard,
   type Stage,
   type Difficulty,
 } from './types';
@@ -52,6 +53,7 @@ export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
   const [signingIn, setSigningIn] = useState(false);
   const onSignIn = useCallback(() => setSigningIn(true), []);
   const [scenario, setScenario] = useState<Scenario | null>(null);
+  const [concepts, setConcepts] = useState<ConceptCard[]>([]);
   const [attempts, setAttempts] = useState<AttemptSummary[]>([]);
   const [attemptId, setAttemptId] = useState<number | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -90,6 +92,9 @@ export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
     listScenarios()
       .then((all) => setScenario(all.find((s) => s.id === scenarioId) ?? null))
       .catch((e) => setStatus(`Backend unreachable: ${e.message}`));
+    listConcepts()
+      .then((all) => setConcepts(all.filter((c) => c.scenarios.includes(scenarioId))))
+      .catch(() => undefined);
   }, [scenarioId]);
 
   // Signing in or out changes whose attempts these are, so the list is keyed on the user
@@ -243,6 +248,28 @@ export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
             </div>
           )}
         </Section>
+
+        {concepts.length > 0 && (
+          <Section title="Read first">
+            {/* Real links opened in a new tab, not navigation. Routing away would unmount
+                this component and take the diagram with it — the same trap the sign-in
+                overlay exists to avoid, and you want the concept beside the canvas anyway. */}
+            <ul className="space-y-1">
+              {concepts.map((c) => (
+                <li key={c.id}>
+                  <a
+                    href={`/learn/${encodeURIComponent(c.id)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block rounded px-2 py-1 text-[12px] text-ink-dim hover:bg-line/50 hover:text-ink"
+                  >
+                    {c.title}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </Section>
+        )}
 
         <Section title="Components">
           <div className="grid grid-cols-2 gap-1">
