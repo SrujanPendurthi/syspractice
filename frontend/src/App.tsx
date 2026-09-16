@@ -43,12 +43,6 @@ export default function App() {
   graph.current = { nodes, edges };
   const getTopology = useCallback(() => toTopology(graph.current.nodes, graph.current.edges), []);
 
-  // Same trick for the notes: the panel reads them at request time rather than taking
-  // them as a prop, so typing in the textarea does not re-render it mid-stream.
-  const notesRef = useRef(notes);
-  notesRef.current = notes;
-  const getNotes = useCallback(() => notesRef.current, []);
-
   // Auto-run plumbing. The panel subscribes; App decides when things have gone quiet.
   // A changing `revision` prop would defeat the memo and put the panel back in every
   // drag frame, so the subscription itself has to be the referentially stable thing.
@@ -191,19 +185,6 @@ export default function App() {
           </p>
         </Section>
 
-        <Section title="Notes">
-          <textarea
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            rows={8}
-            className="w-full resize-y rounded border border-slate-700 bg-slate-800 px-2 py-1 font-mono text-[11px] leading-relaxed text-slate-200"
-          />
-          <p className="mt-1 text-[10px] text-slate-500">
-            Requirements and back-of-the-envelope maths. The first two stages are graded on
-            this, not on the diagram.
-          </p>
-        </Section>
-
         <Section title="Session">
           <div className="flex gap-1">
             <button onClick={save} className="flex-1 rounded bg-slate-700 px-2 py-1 text-xs hover:bg-slate-600">
@@ -246,7 +227,8 @@ export default function App() {
           difficulty={difficulty}
           onAdvance={setStage}
           getTopology={getTopology}
-          getNotes={getNotes}
+          notes={notes}
+          onNotesChange={setNotes}
           subscribeToIdle={subscribeToIdle}
         />
       )}

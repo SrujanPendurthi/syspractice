@@ -9,8 +9,8 @@ interface CritiquePanelProps {
   onAdvance: (stage: Stage) => void;
   /** Read lazily so dragging nodes does not re-render this panel mid-stream. */
   getTopology: () => Topology;
-  /** Same reason — typing in the notes pane must not re-render the panel. */
-  getNotes: () => string;
+  notes: string;
+  onNotesChange: (notes: string) => void;
   /**
    * Fires when the canvas and notes have been still long enough to be worth a critique.
    * Stable by contract: taking a changing prop instead would put this panel back into
@@ -25,18 +25,30 @@ function CritiquePanelInner({
   difficulty,
   onAdvance,
   getTopology,
-  getNotes,
+  notes,
+  onNotesChange,
   subscribeToIdle,
 }: CritiquePanelProps) {
   const [text, setText] = useState('');
-  const [thinking, setThinking] = useState('');
   const [running, setRunning] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [auto, setAuto] = useState(true);
   const abort = useRef<AbortController | null>(null);
+  const startedAt = useRef(0);
 
   // Abort an in-flight stream when the panel goes away or the scenario changes.
   useEffect(() => () => abort.current?.abort(), []);
+
+  // The reasoning phase is most of a critique, so the wait needs a number against it.
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(
+      () => setElapsed(Math.round((Date.now() - startedAt.current) / 1000)),
+      1000,
+    );
+    return () => clearInterval(t);
+  }, [running]);
 
   const run = useCallback(async () => {
     abort.current?.abort();
@@ -44,17 +56,20 @@ function CritiquePanelInner({
     abort.current = controller;
 
     setText('');
-    setThinking('');
     setError(null);
     setRunning(true);
+    startedAt.current = Date.now();
+    setElapsed(0);
 
     try {
       await streamCritique(
-        { scenarioId, topology: getTopology(), notes: getNotes(), stage, difficulty },
+        { scenarioId, topology: getTopology(), notes, stage, difficulty },
+        // `thinking` frames are deliberately dropped rather than ignored upstream: their
+        // arrival is what proves the model is working, but their content is chain of
+        // thought, which reads as mid-sentence noise. The elapsed counter says the same
+        // thing in four characters.
         (kind, t) => {
           if (kind === 'token') setText((prev) => prev + t);
-          // Only the tail is kept — this is a liveness signal, not a transcript.
-          else setThinking((prev) => (prev + t).slice(-400));
         },
         controller.signal,
       );
@@ -63,7 +78,7 @@ function CritiquePanelInner({
     } finally {
       if (!controller.signal.aborted) setRunning(false);
     }
-  }, [scenarioId, stage, difficulty, getTopology, getNotes]);
+  }, [scenarioId, stage, difficulty, getTopology, notes]);
 
   // `run` aborts whatever is already streaming, so an edit landing mid-critique restarts
   // cleanly rather than interleaving two responses into the same panel.
@@ -73,7 +88,25 @@ function CritiquePanelInner({
   const next = nextStage(stage);
 
   return (
-    <section className="flex h-full w-96 shrink-0 flex-col border-l border-slate-800 bg-slate-900">
+    <section className="flex h-full w-[28rem] shrink-0 flex-col border-l border-slate-800 bg-slate-900">
+      {/* Stages 1 and 2 are graded on these notes, so they sit next to the critique that
+          grades them rather than across the window in the sidebar. */}
+      <div className="border-b border-slate-800 px-4 py-3">
+        <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          Notes
+        </h2>
+        <textarea
+          value={notes}
+          onChange={(e) => onNotesChange(e.target.value)}
+          rows={7}
+          className="w-full resize-y rounded border border-slate-700 bg-slate-800 px-2 py-1 font-mono text-[11px] leading-relaxed text-slate-200"
+        />
+        <p className="mt-1 text-[10px] text-slate-500">
+          Requirements and back-of-the-envelope maths. The first two stages are graded on
+          this, not on the diagram.
+        </p>
+      </div>
+
       <header className="border-b border-slate-800 px-4 py-3">
         <div className="flex items-center justify-between">
           <div>
@@ -132,15 +165,13 @@ function CritiquePanelInner({
             a time and pushes back with a question rather than handing over the answer.
           </p>
         )}
-        {/* A reasoning model can think for a minute before emitting any critique text.
-            Showing the tail of that proves it is working rather than hung. */}
-        {running && thinking && !text && (
-          <div className="mb-3 rounded border border-slate-800 bg-slate-950 px-3 py-2">
-            <p className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">Thinking</p>
-            <p className="line-clamp-6 text-[11px] italic leading-relaxed text-slate-600">
-              {thinking}
-            </p>
-          </div>
+        {/* A reasoning model can think for a minute before emitting any critique text, so
+            silence here is indistinguishable from a hang. The counter is the proof. */}
+        {running && !text && (
+          <p className="flex items-center gap-2 text-xs text-slate-500">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+            Thinking… {elapsed}s
+          </p>
         )}
 
         <pre className="whitespace-pre-wrap font-sans text-xs leading-relaxed text-slate-300">
