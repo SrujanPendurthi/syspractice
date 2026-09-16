@@ -52,6 +52,17 @@ export function ProblemList({ onOpen }: ProblemListProps) {
 
   const solved = tally.reduce((n, t) => n + t.solved, 0);
 
+  // The backend returns scenarios in the order they are declared, which is authoring
+  // order rather than anything a reader wants. Grouping by difficulty puts the ramp at
+  // the top and keeps a newly added Easy problem from landing below the Hard ones.
+  const rows = useMemo(
+    () =>
+      [...scenarios].sort(
+        (a, b) => ORDER.indexOf(a.difficulty) - ORDER.indexOf(b.difficulty),
+      ),
+    [scenarios],
+  );
+
   return (
     <div className="min-h-full bg-page">
       <header className="border-b border-line">
@@ -83,7 +94,7 @@ export function ProblemList({ onOpen }: ProblemListProps) {
               </tr>
             </thead>
             <tbody>
-              {scenarios.map((s, i) => {
+              {rows.map((s, i) => {
                 const p = byId.get(s.id);
                 return (
                   <tr

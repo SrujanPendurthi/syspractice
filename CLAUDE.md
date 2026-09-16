@@ -15,7 +15,7 @@ Local-first system design interview trainer. Draw an architecture on a canvas, g
 
 Env overrides: `SYSPRACTICE_DB`, `SYSPRACTICE_ADDR`, `SYSPRACTICE_MODEL`, `LLAMA_SERVER_URL`, `LLAMA_MODEL`, `LLAMA_PORT`.
 
-**The two runners differ on one field.** llama-server ignores the request's `"model"` and serves whatever it was launched with; Ollama *resolves* it and returns `404 model 'local' not found` for anything unknown. Hence `SYSPRACTICE_MODEL` (default `"local"`, correct only for llama-server). `./dev` sets it to the first entry of `ollama list` on the Ollama path.
+**The two runners differ on one field.** llama-server ignores the request's `"model"` and serves whatever it was launched with; Ollama *resolves* it and returns `404 model 'local' not found` for anything unknown. Hence `SYSPRACTICE_MODEL` (default `"local"`, correct only for llama-server). On the Ollama path `./dev` walks a preference list (MiniCPM5-2B, then qwen3:8b, then gemma4:12b) and only falls back to whatever `ollama list` prints first.
 
 ## The one architectural contract
 
@@ -27,9 +27,9 @@ React Flow state ──toTopology()──▶ Topology JSON ──▶ Rust struct
                                         └──▶ SQLite sessions.topology
 ```
 
-Three pairs are **hand-mirrored** across the language boundary: `Topology`/`NodeKind`
-(`topology.rs` ↔ `types.ts`), `Stage` (`critic.rs` ↔ `types.ts`), and `Level`
-(`scenarios.rs` ↔ `types.ts`).
+Four things are **hand-mirrored** across the language boundary: `Topology`/`NodeKind`
+(`topology.rs` ↔ `types.ts`), `Stage` (`critic.rs` ↔ `types.ts`), and `Level` plus
+`Difficulty` (`scenarios.rs` ↔ `types.ts`).
 
 `backend/src/topology.rs` and `frontend/src/types.ts` are **hand-mirrored**. Renaming a field or adding a `NodeKind` means editing both in the same commit — plus `NODE_KINDS` in `types.ts` for the palette entry. `topology.rs`'s round-trip test asserts the camelCase wire format, so a Rust-side rename fails the build; a TS-side rename fails silently. If this drifts more than once, switch to `ts-rs` and derive.
 
@@ -41,7 +41,8 @@ Three pairs are **hand-mirrored** across the language boundary: `Topology`/`Node
 backend/src/
   main.rs        wiring only: env, pool, listener
   routes.rs      HTTP layer + AppState. Handlers stay thin.
-  db.rs          persistence. No HTTP types cross this boundary.
+  db.rs          persistence + derived progress. No HTTP types cross this boundary.
+  error.rs       AppError, and its IntoResponse
   critic.rs      prompt construction + llama-server SSE proxy
   topology.rs    the shared domain contract
   scenarios.rs   static scenario + rubric data
@@ -93,13 +94,13 @@ llama-server -m <model.gguf> --port 8080
 * **A model will rubber-stamp a stated number.** Told to "check their maths", both MiniCPM5-2B and gemma4:12b read `100M * 365 * 500B = 18GB` and replied that it checks out — it is 18.25 TB, a 1000x unit slip. Not a capacity problem; the 12B failed identically. `Stage::Estimation` now orders the model to recompute from the inputs *before* judging, and names the GB/TB and per-day/per-second slips as the ones to look for. Weaken that wording and the estimation stage silently goes back to agreeing with whatever it is shown.
 * **The interview is staged, one stage per critique.** `Stage::focus()` in `critic.rs` says what to grade *and* what to ignore; without the ignore half the model drifts back to reviewing the whole design every time. The ~150-word cap is load-bearing rather than cosmetic — critiques auto-run when the canvas goes quiet, and a four-section answer never finishes before the next edit aborts it. Measured on MiniCPM: 1m38s unstaged, 36-46s per stage.
 * **Difficulty filters the rubric in Rust, not in the prompt.** `Scenario::rubric_for(level)` drops out-of-scope lines before they are ever sent. A 2B will not reliably ignore a rubric line it can see. `rubric` is `#[serde(skip)]` so it never reaches the browser either.
-* **`subscribeToIdle` in `App.tsx` must stay referentially stable.** It is a callback over a ref'd listener set precisely so `CritiquePanel` (memoized) keeps its props unchanged during a drag. Passing a changing `revision` prop instead would undo the same optimization `getTopology` exists to protect. The debounce effect's cleanup is also what gives abort-on-edit for free.
+* **`getTopology` and `subscribeToIdle` live in `Workspace.tsx` and must stay referentially stable.** Both are callbacks over refs precisely so `CritiquePanel` (memoized) keeps its props unchanged through a drag — one reads the canvas lazily, the other hands out idle notifications without a changing `revision` prop. Break either and every drag frame re-renders a panel that is mid-stream. The debounce effect's cleanup is also what gives abort-on-edit for free.
 * **Vite proxies `/api`**, so the backend has no CORS layer. Serving the frontend from anywhere other than the dev server means adding one — *and* an SPA fallback, since `useRoute` relies on the dev server rewriting unknown paths like `/s/url-shortener` to `index.html`.
 * **`difficulty` and `level` are different axes and neither is a rename of the other.** `Scenario::difficulty` is Easy/Medium/Hard, how hard the problem is. `Level` is Junior/Senior/Staff, who you are being interviewed as, and it filters the rubric via `Scenario::rubric_for`. You can take an Easy problem at Staff level. The critique request's field is `level`; it was called `difficulty` until the problem list needed the other meaning.
 * **Progress is derived, not stored.** `db::list_progress` is a `GROUP BY` over `sessions` — solved means some session for that scenario reached the `bottlenecks` stage. There is no progress table and no migration for it. That is also why `Workspace` persists on stage advance rather than only on Save: without it the list stays empty for anyone who never presses the button. Solved measures that the interview was walked end to end, not that the design was good.
 * **sqlx runtime-checked queries** (`query_as`, not `query!`). No `DATABASE_URL` needed at build time, but typos are caught by tests, not the compiler.
+* **The difficulty triad exists twice in `index.css` on purpose.** `--color-easy/medium/hard` are LeetCode's vivid values, for shapes — ring arcs, dots, fills. `--color-*-ink` are the same hues darkened, for text. The vivid set runs 1.9:1 to 2.9:1 on white and fails as type; LeetCode ships that flaw, we do not. Collapsing the pairs "because they are the same colour" reintroduces it.
 * **`nodeTypes` lives outside the component** in `Canvas.tsx`. Moving it inside remounts every node on every drag frame.
-* `getTopology` in `App.tsx` is a stable callback over a ref precisely so `CritiquePanel` (memoized) stays out of drag renders.
 * `:memory:` SQLite pools are capped at 1 connection in `db::connect` — each pooled connection would otherwise get its own private database.
 * `./dev` runs `set -m` so each child leads its own process group and the trap can kill grandchildren (`cargo run` and `npm run dev` are both wrappers). That also means children sit outside the terminal's foreground group, so their stdin is detached — otherwise vite reads stdin, takes `SIGTTIN`, and suspends.
 

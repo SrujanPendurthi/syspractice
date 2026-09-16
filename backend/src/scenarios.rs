@@ -358,6 +358,282 @@ pub static SCENARIOS: &[Scenario] = &[
             item(Level::Staff, "Supply and demand are regional, so the system partitions by geography, not by user"),
         ],
     },
+    Scenario {
+        id: "pastebin",
+        title: "Pastebin",
+        prompt: "Design a service that stores a block of text and returns a link to it.",
+        difficulty: Difficulty::Easy,
+        functional: &[
+            "Paste text and get back a short link",
+            "Read a paste by its link",
+            "Optional expiry and unlisted-vs-public visibility",
+        ],
+        non_functional: &[
+            "10M pastes/day, read-heavy",
+            "Pastes can be up to 10MB",
+            "A link that has not expired always resolves",
+        ],
+        rubric: &[
+            item(Level::Junior, "The text body belongs in blob storage, not in a row alongside the metadata"),
+            item(Level::Junior, "Link generation and the read path — cache in front of the metadata lookup"),
+            item(Level::Senior, "How expiry actually deletes: a sweeper job, a TTL on the object, or lazy on read"),
+            item(Level::Senior, "Size limits enforced at upload, and what a 10MB paste does to the response path"),
+            item(Level::Staff, "An unlisted link is not access control — say what the security model actually is"),
+        ],
+    },
+    Scenario {
+        id: "unique-id-generator",
+        title: "Distributed Unique ID Generator",
+        prompt: "Design a service that hands out unique 64-bit IDs across a fleet of machines.",
+        difficulty: Difficulty::Easy,
+        functional: &[
+            "Every ID is unique across the whole fleet",
+            "IDs are roughly sortable by creation time",
+            "Callers can get an ID without a network round trip where possible",
+        ],
+        non_functional: &[
+            "1M IDs/second at peak",
+            "IDs fit in 64 bits",
+            "No single machine is a bottleneck or a single point of failure",
+        ],
+        rubric: &[
+            item(Level::Junior, "The bit layout: timestamp, machine id, sequence — and how many bits each gets"),
+            item(Level::Junior, "Why a database auto-increment does not survive the move off one machine"),
+            item(Level::Senior, "How a machine gets its id at boot, and what stops two machines sharing one"),
+            item(Level::Senior, "Sequence exhaustion within a millisecond — block, or borrow from the next tick"),
+            item(Level::Staff, "Clock skew and NTP going backwards is the failure that silently emits duplicates"),
+        ],
+    },
+    Scenario {
+        id: "uptime-monitor",
+        title: "Uptime Monitor",
+        prompt: "Design a service that checks whether customer websites are up and alerts when they are not.",
+        difficulty: Difficulty::Easy,
+        functional: &[
+            "Check a URL on a schedule the customer chooses",
+            "Alert by email or webhook when a check fails",
+            "Show recent uptime history per site",
+        ],
+        non_functional: &[
+            "500k monitored URLs, most checked every minute",
+            "A real outage is alerted within two minutes",
+            "A single failed check does not page anyone",
+        ],
+        rubric: &[
+            item(Level::Junior, "Checks are queued work, not a loop on one box — scheduler and worker pool are separate"),
+            item(Level::Junior, "Confirmation before alerting: N consecutive failures, or a second check from elsewhere"),
+            item(Level::Senior, "Check results are a time series; storing every check forever is the wrong default"),
+            item(Level::Senior, "Alert de-duplication and flap suppression so one outage is one page"),
+            item(Level::Staff, "Distinguishing 'the site is down' from 'our checker's region is down'"),
+        ],
+    },
+    Scenario {
+        id: "feature-flags",
+        title: "Feature Flag Service",
+        prompt: "Design a service that lets engineers turn features on for a subset of users without a deploy.",
+        difficulty: Difficulty::Easy,
+        functional: &[
+            "Define a flag and target it by user, percentage, or attribute",
+            "Applications evaluate flags at request time",
+            "Changing a flag takes effect quickly across the fleet",
+        ],
+        non_functional: &[
+            "Flag evaluation adds under 1ms to a request",
+            "50k application instances reading flags",
+            "The control plane being down must not take the applications down",
+        ],
+        rubric: &[
+            item(Level::Junior, "Evaluation happens in-process against a cached ruleset, not as a network call per flag"),
+            item(Level::Junior, "How rules reach the fleet — polling a snapshot, or a push/stream channel"),
+            item(Level::Senior, "Percentage rollouts must hash the user id so a user does not flip on every request"),
+            item(Level::Senior, "The SDK serves the last known good ruleset when the control plane is unreachable"),
+            item(Level::Staff, "Flag reads vastly outnumber writes, so the write path can be slow and strongly consistent"),
+        ],
+    },
+    Scenario {
+        id: "leaderboard",
+        title: "Real-Time Leaderboard",
+        prompt: "Design the leaderboard for a game with millions of concurrent players.",
+        difficulty: Difficulty::Medium,
+        functional: &[
+            "Show the global top 100",
+            "Show a player their own rank and the players around them",
+            "Scores update continuously during play",
+        ],
+        non_functional: &[
+            "50M players, 100k score updates/second at peak",
+            "Top-100 reads in under 100ms",
+            "Ranks may lag by seconds, but must not be wrong by a lot",
+        ],
+        rubric: &[
+            item(Level::Junior, "A sorted set in memory, not an ORDER BY over the whole players table on every read"),
+            item(Level::Junior, "The top 100 is cached and shared; a player's own rank is the expensive query"),
+            item(Level::Senior, "Sharding a global ranking is the hard part — say how ranks compose across shards"),
+            item(Level::Senior, "Durability: the in-memory ranking is a derived view, so where does truth live"),
+            item(Level::Staff, "Exact rank for every player is far more expensive than approximate — justify which you sell"),
+        ],
+    },
+    Scenario {
+        id: "ticket-booking",
+        title: "Ticket Booking (Ticketmaster)",
+        prompt: "Design seat selection and checkout for high-demand event ticketing.",
+        difficulty: Difficulty::Medium,
+        functional: &[
+            "Browse events and see which seats are free",
+            "Hold a seat while the buyer completes payment",
+            "Confirm the booking, or release the seat if payment fails",
+        ],
+        non_functional: &[
+            "A popular on-sale draws 1M people in the first minute",
+            "A seat is never sold twice",
+            "Browsing stays available while an on-sale is in progress",
+        ],
+        rubric: &[
+            item(Level::Junior, "A seat hold with an expiry, distinct from a confirmed booking"),
+            item(Level::Junior, "Reads of seat availability and writes of a reservation are very different workloads"),
+            item(Level::Senior, "The reservation write is the serialization point — a transaction or conditional update, not a read-then-write"),
+            item(Level::Senior, "Expiring held seats reliably when the buyer walks away mid-checkout"),
+            item(Level::Staff, "A queue in front of the on-sale converts a thundering herd into throughput you control"),
+        ],
+    },
+    Scenario {
+        id: "job-scheduler",
+        title: "Distributed Job Scheduler",
+        prompt: "Design a service that runs user-defined jobs on a schedule across a worker fleet.",
+        difficulty: Difficulty::Medium,
+        functional: &[
+            "Schedule a job by cron expression or one-off timestamp",
+            "Run the job on some worker and record the result",
+            "Retry failures with backoff",
+        ],
+        non_functional: &[
+            "10M scheduled jobs, 50k firing per minute",
+            "A job due at 09:00 starts within seconds of 09:00",
+            "A job is not silently skipped when a worker dies",
+        ],
+        rubric: &[
+            item(Level::Junior, "Separate deciding what is due from executing it — scheduler and workers are different tiers"),
+            item(Level::Junior, "Workers claim jobs from a queue; the claim has a lease so a dead worker's job is retaken"),
+            item(Level::Senior, "Finding due jobs without scanning all 10M — a time-bucketed index or a priority structure"),
+            item(Level::Senior, "At-least-once delivery means jobs must be idempotent; say so and say who enforces it"),
+            item(Level::Staff, "A backlog after an outage will fire thousands of overdue jobs at once unless it is shaped"),
+        ],
+    },
+    Scenario {
+        id: "proximity-service",
+        title: "Nearby Places (Yelp)",
+        prompt: "Design the service that answers 'what businesses are within 5km of me'.",
+        difficulty: Difficulty::Medium,
+        functional: &[
+            "Return businesses within a radius of a point",
+            "Filter by category and sort by distance",
+            "Business details and hours are read alongside the search",
+        ],
+        non_functional: &[
+            "200M businesses, 5k searches/second",
+            "Search returns in under 200ms",
+            "Business data changes rarely; searches are constant",
+        ],
+        rubric: &[
+            item(Level::Junior, "You cannot compute distance to 200M rows per query — the index does the narrowing"),
+            item(Level::Junior, "Business records are read-heavy and nearly static, so they cache well"),
+            item(Level::Senior, "Geohash, quadtree, or S2 — and why the chosen cell size fits a 5km query"),
+            item(Level::Senior, "A radius that spans cell boundaries must search neighbouring cells too"),
+            item(Level::Staff, "Density is wildly uneven: a fixed grid gives one cell for Montana and thousands for Manhattan"),
+        ],
+    },
+    Scenario {
+        id: "file-sync",
+        title: "File Sync (Dropbox)",
+        prompt: "Design a service that keeps a folder in sync across a user's devices.",
+        difficulty: Difficulty::Hard,
+        functional: &[
+            "Upload a file and have it appear on the user's other devices",
+            "Sync only what changed, not the whole file",
+            "Resolve the case where two devices edit the same file",
+        ],
+        non_functional: &[
+            "100M users, 1GB average per user",
+            "A small edit to a large file syncs quickly",
+            "A file is never silently lost or corrupted",
+        ],
+        rubric: &[
+            item(Level::Junior, "Files are chunked; metadata and chunk storage are separate systems"),
+            item(Level::Junior, "Clients are notified of changes rather than polling for them"),
+            item(Level::Senior, "Content-addressed chunks give deduplication and make an interrupted upload resumable"),
+            item(Level::Senior, "A version or revision chain per file, so a conflict is detectable rather than last-write-wins"),
+            item(Level::Staff, "Conflict resolution is a product decision — say what the user sees, not just what the server does"),
+        ],
+    },
+    Scenario {
+        id: "collaborative-editor",
+        title: "Collaborative Document Editor",
+        prompt: "Design a document editor where several people type in the same document at once.",
+        difficulty: Difficulty::Hard,
+        functional: &[
+            "Multiple users edit one document simultaneously",
+            "Everyone converges on the same final text",
+            "Show who else is in the document and where their cursor is",
+        ],
+        non_functional: &[
+            "Up to 50 concurrent editors per document",
+            "A keystroke appears to collaborators in under 200ms",
+            "No edit is lost, including edits made while briefly offline",
+        ],
+        rubric: &[
+            item(Level::Junior, "A persistent connection per editing session, with one server owning a given document"),
+            item(Level::Junior, "Edits are operations against a version, not whole-document saves"),
+            item(Level::Senior, "OT or CRDT — name the choice and what it costs, rather than hand-waving 'merge'"),
+            item(Level::Senior, "Presence and cursors are ephemeral, high-frequency data and should not go through the durable path"),
+            item(Level::Staff, "Failing over a document to another server mid-session without losing unacknowledged operations"),
+        ],
+    },
+    Scenario {
+        id: "key-value-store",
+        title: "Distributed Key-Value Store",
+        prompt: "Design a replicated key-value store that survives node loss.",
+        difficulty: Difficulty::Hard,
+        functional: &[
+            "get(key) and put(key, value)",
+            "Data is replicated across nodes",
+            "Nodes can be added and removed while serving",
+        ],
+        non_functional: &[
+            "Tens of TB across hundreds of nodes",
+            "Single-digit millisecond reads",
+            "Stays available for reads during a network partition",
+        ],
+        rubric: &[
+            item(Level::Junior, "Keys are partitioned across nodes, and a client can find the node for a key"),
+            item(Level::Junior, "Every key is on more than one node, so losing a node loses no data"),
+            item(Level::Senior, "Consistent hashing with virtual nodes, and what happens to keys when a node joins"),
+            item(Level::Senior, "The consistency choice, stated as a trade: quorum reads and writes, or eventual with repair"),
+            item(Level::Staff, "Detecting and reconciling divergent replicas — vector clocks, read repair, anti-entropy"),
+        ],
+    },
+    Scenario {
+        id: "stock-exchange",
+        title: "Stock Exchange",
+        prompt: "Design the order matching engine and market data feed for an exchange.",
+        difficulty: Difficulty::Hard,
+        functional: &[
+            "Accept limit and market orders, and cancellations",
+            "Match orders by price then time priority",
+            "Publish trades and the order book to subscribers",
+        ],
+        non_functional: &[
+            "500k orders/second per symbol at open",
+            "Order acknowledged in microseconds, not milliseconds",
+            "Every order and trade is auditable and replayable",
+        ],
+        rubric: &[
+            item(Level::Junior, "Matching is per-symbol, so symbols partition cleanly across machines"),
+            item(Level::Junior, "The order book is an in-memory structure; a database in the matching path is too slow"),
+            item(Level::Senior, "Determinism: a single writer per symbol, because concurrent matching breaks price-time priority"),
+            item(Level::Senior, "Durability without disk in the hot path — sequenced input log, replicated before acknowledgement"),
+            item(Level::Staff, "Failover must replay the input log to reach the identical book state, not an approximate one"),
+        ],
+    },
 ];
 
 #[cfg(test)]
@@ -377,6 +653,17 @@ mod tests {
             assert!(senior.iter().all(|t| staff.contains(t)), "{} staff drops a senior line", s.id);
             assert_eq!(staff.len(), s.rubric.len(), "{} hides a line even at staff", s.id);
         }
+    }
+
+    #[test]
+    fn ids_are_unique() {
+        // `find` takes the first match, so a duplicated id would shadow a whole scenario
+        // rather than fail anything — and the list would show two rows sharing progress.
+        let mut ids: Vec<_> = SCENARIOS.iter().map(|s| s.id).collect();
+        ids.sort_unstable();
+        let count = ids.len();
+        ids.dedup();
+        assert_eq!(ids.len(), count, "two scenarios share an id");
     }
 
     #[test]
