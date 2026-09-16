@@ -12,6 +12,7 @@ use axum::response::sse::{KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use axum_macros::FromRequest;
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 use serde_json::json;
@@ -44,18 +45,30 @@ pub struct AppState {
     pub critique_quota: i64,
 }
 
+/// `Json`, but its rejections come back in the same `{"error": ...}` shape as everything
+/// else. Axum's own answer to a missing field is plain text with a 422, which `api.ts`
+/// cannot read, so the user is shown "Unprocessable Entity".
+#[derive(FromRequest)]
+#[from_request(via(Json), rejection(AppError))]
+pub struct AppJson<T>(pub T);
+
 pub fn router(state: AppState) -> Router {
-    Router::new()
-        .route("/api/scenarios", get(list_scenarios))
-        .route("/api/progress", get(list_progress))
-        .route("/api/attempts", get(list_attempts).post(create_attempt))
-        .route("/api/attempts/{id}", get(get_attempt).put(update_attempt))
-        .route("/api/critique", post(critique))
-        .route("/api/auth/register", post(register))
-        .route("/api/auth/login", post(login))
-        .route("/api/auth/logout", post(logout))
-        .route("/api/auth/me", get(me))
-        .with_state(state)
+    // Nested so the API gets its own fallback. Without it an unknown /api path falls
+    // through to the SPA and answers 200 with index.html, which `api.ts` then tries to
+    // parse as JSON — a renamed route fails as an opaque SyntaxError instead of a 404.
+    let api = Router::new()
+        .route("/scenarios", get(list_scenarios))
+        .route("/progress", get(list_progress))
+        .route("/attempts", get(list_attempts).post(create_attempt))
+        .route("/attempts/{id}", get(get_attempt).put(update_attempt))
+        .route("/critique", post(critique))
+        .route("/auth/register", post(register))
+        .route("/auth/login", post(login))
+        .route("/auth/logout", post(logout))
+        .route("/auth/me", get(me))
+        .fallback(|| async { AppError::NotFound });
+
+    Router::new().nest("/api", api).with_state(state)
 }
 
 async fn list_scenarios() -> impl IntoResponse {
@@ -128,7 +141,7 @@ struct UpdateAttempt {
 async fn create_attempt(
     State(s): State<AppState>,
     AuthUser(user): AuthUser,
-    Json(body): Json<CreateAttempt>,
+    AppJson(body): AppJson<CreateAttempt>,
 ) -> Result<impl IntoResponse, AppError> {
     check_notes(&body.notes)?;
     // Without this a client can write attempts against scenario ids that do not exist,
@@ -159,7 +172,7 @@ async fn update_attempt(
     State(s): State<AppState>,
     AuthUser(user): AuthUser,
     Path(id): Path<i64>,
-    Json(body): Json<UpdateAttempt>,
+    AppJson(body): AppJson<UpdateAttempt>,
 ) -> Result<impl IntoResponse, AppError> {
     check_notes(&body.notes)?;
     db::update_attempt(&s.pool, user.id, id, &body.topology, &body.notes, body.stage).await?;
@@ -186,23 +199,30 @@ fn default_level() -> Level {
 async fn critique(
     State(s): State<AppState>,
     AuthUser(user): AuthUser,
-    Json(body): Json<CritiqueRequest>,
+    AppJson(body): AppJson<CritiqueRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let scenario = scenarios::find(&body.scenario_id).ok_or(AppError::NotFound)?;
     check_notes(&body.notes)?;
 
-    if db::critiques_in_last_hour(&s.pool, user.id).await? >= s.critique_quota {
-        return Err(AppError::QuotaExceeded(s.critique_quota));
-    }
+    // Claimed up front and in one statement, so concurrent requests cannot each read the
+    // same under-limit count and all go through. Released below if the runner never ran.
+    let reservation = db::reserve_critique(&s.pool, user.id, s.critique_quota)
+        .await?
+        .ok_or(AppError::QuotaExceeded(s.critique_quota))?;
 
     let system = critic::system_prompt(body.level, body.stage);
     let prompt = critic::build_prompt(scenario, &body.topology, &body.notes, body.level);
-    let stream = critic::stream_critique(&s.runner_url, &s.model, system, prompt).await?;
 
-    // Logged once the runner has accepted the request, and before a single token is read.
-    // Metering on completion would give a free critique to anyone who closes the tab, and
-    // the GPU time is spent either way.
-    db::log_critique(&s.pool, user.id).await?;
+    let stream = match critic::stream_critique(&s.runner_url, &s.model, system, prompt).await {
+        Ok(stream) => stream,
+        Err(e) => {
+            // No GPU time was spent, so charging for it would be charging for our own
+            // outage. Once the stream starts the charge stands, because closing the tab
+            // does not give the seconds back.
+            db::release_critique(&s.pool, reservation).await?;
+            return Err(e);
+        }
+    };
 
     // Keep-alive comments stop proxies from closing the connection while the model
     // is still loading the prompt and has emitted no tokens yet.
@@ -230,7 +250,7 @@ async fn register(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     jar: CookieJar,
-    Json(body): Json<Register>,
+    AppJson(body): AppJson<Register>,
 ) -> Result<impl IntoResponse, AppError> {
     // Counted before the work, and counted on success too: the limit is on how many times
     // one address may ask whether an email is taken, not on how many times it may fail.
@@ -256,7 +276,7 @@ async fn register(
 async fn login(
     State(s): State<AppState>,
     jar: CookieJar,
-    Json(body): Json<Login>,
+    AppJson(body): AppJson<Login>,
 ) -> Result<impl IntoResponse, AppError> {
     let key = db::fold_email(&body.email);
     s.login_throttle.check(&key)?;

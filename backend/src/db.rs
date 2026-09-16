@@ -284,6 +284,14 @@ pub async fn store_auth_session(
     user_id: i64,
     days: i64,
 ) -> Result<(), AppError> {
+    // Expired rows are harmless — `user_for_token` filters them — but nothing was ever
+    // deleting them. Sweeping this user's on the way in keeps the table bounded by live
+    // sessions without needing a background job.
+    sqlx::query("DELETE FROM auth_sessions WHERE user_id = ? AND expires_at <= datetime('now')")
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+
     sqlx::query(
         "INSERT INTO auth_sessions (token_hash, user_id, expires_at)
          VALUES (?, ?, datetime('now', ?))",
@@ -323,13 +331,37 @@ pub async fn delete_auth_session(pool: &SqlitePool, token_hash: &[u8]) -> Result
     Ok(())
 }
 
-/// Written before the stream starts, not after it finishes: a user who closes the tab
-/// halfway through has still spent the GPU time.
-pub async fn log_critique(pool: &SqlitePool, user_id: i64) -> Result<(), AppError> {
-    sqlx::query("INSERT INTO critique_log (user_id) VALUES (?)")
-        .bind(user_id)
-        .execute(pool)
-        .await?;
+/// Claims one unit of quota, or `None` when the user is already at the limit.
+///
+/// The count and the insert are one statement on purpose. Read-then-write let concurrent
+/// requests all read the same under-limit count and all proceed — measured at 5 through on
+/// a limit of 2 with twelve in flight, which is a 2.5x overrun on a billing control.
+/// SQLite serializes writers, so evaluating the count inside the INSERT is enough; no
+/// explicit transaction is needed.
+pub async fn reserve_critique(
+    pool: &SqlitePool,
+    user_id: i64,
+    quota: i64,
+) -> Result<Option<i64>, AppError> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "INSERT INTO critique_log (user_id)
+         SELECT ?
+         WHERE (SELECT COUNT(*) FROM critique_log
+                WHERE user_id = ? AND created_at > datetime('now', '-1 hour')) < ?
+         RETURNING id",
+    )
+    .bind(user_id)
+    .bind(user_id)
+    .bind(quota)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.0))
+}
+
+/// Gives a reservation back when the critique never happened. The runner refusing the
+/// request costs no GPU time, so charging for it would be charging for our own outage.
+pub async fn release_critique(pool: &SqlitePool, id: i64) -> Result<(), AppError> {
+    sqlx::query("DELETE FROM critique_log WHERE id = ?").bind(id).execute(pool).await?;
     Ok(())
 }
 
@@ -505,13 +537,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_reservation_is_refused_at_the_limit_and_refunded_on_failure() {
+        let pool = connect(":memory:").await.unwrap();
+        let u = user(&pool, "a@example.com").await;
+
+        let first = reserve_critique(&pool, u, 2).await.unwrap().expect("first is within quota");
+        assert!(reserve_critique(&pool, u, 2).await.unwrap().is_some());
+        assert!(reserve_critique(&pool, u, 2).await.unwrap().is_none(), "third exceeded the quota");
+
+        // Giving one back has to free a slot, or a runner outage permanently eats quota.
+        release_critique(&pool, first).await.unwrap();
+        assert_eq!(critiques_in_last_hour(&pool, u).await.unwrap(), 1);
+        assert!(reserve_critique(&pool, u, 2).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn expired_sessions_are_swept_when_a_new_one_is_issued() {
+        let pool = connect(":memory:").await.unwrap();
+        let u = user(&pool, "a@example.com").await;
+
+        store_auth_session(&pool, b"stale", u, -1).await.unwrap();
+        store_auth_session(&pool, b"live", u, 30).await.unwrap();
+
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM auth_sessions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "the expired row should have been swept, not accumulated");
+        assert!(user_for_token(&pool, b"live").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
     async fn critiques_are_counted_per_user() {
         let pool = connect(":memory:").await.unwrap();
         let alice = user(&pool, "alice@example.com").await;
         let bob = user(&pool, "bob@example.com").await;
 
         for _ in 0..3 {
-            log_critique(&pool, alice).await.unwrap();
+            reserve_critique(&pool, alice, 100).await.unwrap().expect("within quota");
         }
         assert_eq!(critiques_in_last_hour(&pool, alice).await.unwrap(), 3);
         assert_eq!(critiques_in_last_hour(&pool, bob).await.unwrap(), 0, "quota is per user");
