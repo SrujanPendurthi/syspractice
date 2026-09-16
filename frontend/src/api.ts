@@ -1,4 +1,11 @@
-import type { Level, Scenario, SessionSummary, Stage, Topology } from './types';
+import type {
+  Level,
+  Scenario,
+  ScenarioProgress,
+  SessionSummary,
+  Stage,
+  Topology,
+} from './types';
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -9,6 +16,8 @@ async function json<T>(res: Response): Promise<T> {
 }
 
 export const listScenarios = () => fetch('/api/scenarios').then(json<Scenario[]>);
+
+export const listProgress = () => fetch('/api/progress').then(json<ScenarioProgress[]>);
 
 export const listSessions = () => fetch('/api/sessions').then(json<SessionSummary[]>);
 
@@ -50,7 +59,7 @@ export async function streamCritique(
     topology: Topology;
     notes: string;
     stage: Stage;
-    difficulty: Level;
+    level: Level;
   },
   onEvent: (kind: CritiqueEvent, text: string) => void,
   signal: AbortSignal,

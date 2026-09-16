@@ -25,6 +25,7 @@ pub struct AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/scenarios", get(list_scenarios))
+        .route("/api/progress", get(list_progress))
         .route("/api/sessions", get(list_sessions).post(create_session))
         .route("/api/sessions/{id}", get(get_session).put(update_session))
         .route("/api/critique", post(critique))
@@ -33,6 +34,10 @@ pub fn router(state: AppState) -> Router {
 
 async fn list_scenarios() -> impl IntoResponse {
     Json(scenarios::SCENARIOS)
+}
+
+async fn list_progress(State(s): State<AppState>) -> Result<impl IntoResponse, AppError> {
+    Ok(Json(db::list_progress(&s.pool).await?))
 }
 
 async fn list_sessions(State(s): State<AppState>) -> Result<impl IntoResponse, AppError> {
@@ -101,7 +106,7 @@ struct CritiqueRequest {
     #[serde(default = "first_stage")]
     stage: Stage,
     #[serde(default = "default_level")]
-    difficulty: Level,
+    level: Level,
 }
 
 fn default_level() -> Level {
@@ -113,8 +118,8 @@ async fn critique(
     Json(body): Json<CritiqueRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let scenario = scenarios::find(&body.scenario_id).ok_or(AppError::NotFound)?;
-    let system = critic::system_prompt(body.difficulty, body.stage);
-    let prompt = critic::build_prompt(scenario, &body.topology, &body.notes, body.difficulty);
+    let system = critic::system_prompt(body.level, body.stage);
+    let prompt = critic::build_prompt(scenario, &body.topology, &body.notes, body.level);
     let stream = critic::stream_critique(&s.runner_url, &s.model, system, prompt).await?;
 
     // Keep-alive comments stop proxies from closing the connection while the model

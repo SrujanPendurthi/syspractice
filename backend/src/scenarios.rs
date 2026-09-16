@@ -31,6 +31,16 @@ only appears under load or partition.",
     }
 }
 
+/// How hard the problem itself is. Unrelated to `Level`, which is the seniority you have
+/// chosen to be interviewed at — you can take an Easy problem at Staff level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Difficulty {
+    Easy,
+    Medium,
+    Hard,
+}
+
 /// One thing a strong answer covers, and the level at which it becomes fair game.
 #[derive(Debug)]
 pub struct RubricItem {
@@ -49,6 +59,7 @@ pub struct Scenario {
     pub id: &'static str,
     pub title: &'static str,
     pub prompt: &'static str,
+    pub difficulty: Difficulty,
     pub functional: &'static [&'static str],
     pub non_functional: &'static [&'static str],
     /// What a strong answer covers. Fed to the critic, never shown in the UI —
@@ -74,6 +85,7 @@ pub static SCENARIOS: &[Scenario] = &[
         id: "url-shortener",
         title: "URL Shortener",
         prompt: "Design a URL shortening service like bit.ly.",
+        difficulty: Difficulty::Easy,
         functional: &[
             "Shorten a long URL to a unique short code",
             "Redirect a short code to the original URL",
@@ -96,6 +108,7 @@ pub static SCENARIOS: &[Scenario] = &[
         id: "chat-app",
         title: "Chat App (WhatsApp)",
         prompt: "Design a real-time 1:1 and group messaging service.",
+        difficulty: Difficulty::Medium,
         functional: &[
             "Send/receive messages in near real time",
             "Delivery and read receipts",
@@ -119,6 +132,7 @@ pub static SCENARIOS: &[Scenario] = &[
         id: "rate-limiter",
         title: "Distributed Rate Limiter",
         prompt: "Design a rate limiter shared across a fleet of API servers.",
+        difficulty: Difficulty::Medium,
         functional: &[
             "Per-API-key and per-IP limits",
             "Multiple policies (per-second burst, per-hour quota)",
@@ -141,6 +155,7 @@ pub static SCENARIOS: &[Scenario] = &[
         id: "video-streaming",
         title: "Video Streaming (YouTube)",
         prompt: "Design a video upload and streaming platform.",
+        difficulty: Difficulty::Hard,
         functional: &[
             "Upload a video and transcode to multiple bitrates",
             "Stream with adaptive bitrate playback",
@@ -157,6 +172,190 @@ pub static SCENARIOS: &[Scenario] = &[
             item(Level::Senior, "Chunked storage plus CDN edge caching; origin shields"),
             item(Level::Senior, "Adaptive bitrate manifest (HLS/DASH) and where it is generated"),
             item(Level::Staff, "View counts are eventually consistent, not a synchronous DB write per play"),
+        ],
+    },
+    Scenario {
+        id: "news-feed",
+        title: "News Feed (Twitter/Instagram)",
+        prompt: "Design the home timeline for a social network.",
+        difficulty: Difficulty::Medium,
+        functional: &[
+            "Post text and images to followers",
+            "Home timeline ranked or reverse-chronological",
+            "Follow and unfollow accounts",
+        ],
+        non_functional: &[
+            "200M daily active users",
+            "Timeline loads in under 200ms",
+            "A post is visible to followers within seconds",
+        ],
+        rubric: &[
+            item(Level::Junior, "Separate write path (post) from read path (timeline build)"),
+            item(Level::Junior, "Timeline is served from a cache, not assembled from the posts table per request"),
+            item(Level::Senior, "Fan-out on write vs fan-out on read, and which one the follower graph forces"),
+            item(Level::Senior, "Feed storage is capped and trimmed rather than unbounded per user"),
+            item(Level::Staff, "Celebrity accounts break fan-out on write — the hybrid merge at read time"),
+        ],
+    },
+    Scenario {
+        id: "web-crawler",
+        title: "Web Crawler",
+        prompt: "Design a crawler that indexes a large portion of the public web.",
+        difficulty: Difficulty::Medium,
+        functional: &[
+            "Fetch pages starting from a seed set and follow links",
+            "Store raw content for downstream indexing",
+            "Recrawl pages as they change",
+        ],
+        non_functional: &[
+            "1B pages per month",
+            "Never overwhelm a single origin server",
+            "Survive restarts without recrawling everything",
+        ],
+        rubric: &[
+            item(Level::Junior, "Frontier queue of URLs to visit, separate from the set already seen"),
+            item(Level::Junior, "Duplicate detection so the same URL is not fetched repeatedly"),
+            item(Level::Senior, "Politeness: per-domain rate limiting and robots.txt, and where that state lives"),
+            item(Level::Senior, "Content-level dedup — the same page under many URLs"),
+            item(Level::Staff, "Crawl traps and infinite URL spaces; depth and budget limits per domain"),
+        ],
+    },
+    Scenario {
+        id: "notification-service",
+        title: "Notification Service",
+        prompt: "Design a service that delivers push, email, and SMS notifications.",
+        difficulty: Difficulty::Medium,
+        functional: &[
+            "Accept a notification request from any internal service",
+            "Deliver via push, email, or SMS based on user preference",
+            "Respect per-user opt-out and quiet hours",
+        ],
+        non_functional: &[
+            "500M notifications/day with bursts at the top of the hour",
+            "A notification is never delivered twice",
+            "A third-party provider outage does not lose messages",
+        ],
+        rubric: &[
+            item(Level::Junior, "Queue between request intake and delivery so senders never block"),
+            item(Level::Junior, "Per-channel adapters behind one interface; preference lookup before send"),
+            item(Level::Senior, "Retry with backoff, and a dead letter queue for what never succeeds"),
+            item(Level::Senior, "Idempotency key so a retry does not become a second notification"),
+            item(Level::Staff, "Provider failover and per-provider rate limits without reordering a user's messages"),
+        ],
+    },
+    Scenario {
+        id: "search-autocomplete",
+        title: "Search Autocomplete",
+        prompt: "Design the typeahead suggestions for a large search box.",
+        difficulty: Difficulty::Medium,
+        functional: &[
+            "Return the top suggestions for a prefix as the user types",
+            "Rank by popularity",
+            "Reflect trending queries within a day",
+        ],
+        non_functional: &[
+            "Suggestions return in under 50ms at p99",
+            "100k queries/sec at peak",
+            "Suggestions are the same for everyone — no personalization",
+        ],
+        rubric: &[
+            item(Level::Junior, "Prefix lookup structure (trie or sorted index), not a LIKE scan over a table"),
+            item(Level::Junior, "Top-k precomputed per prefix rather than ranked at request time"),
+            item(Level::Senior, "Build pipeline is offline and periodic; serving layer is read-only"),
+            item(Level::Senior, "Sharding by prefix and how the tree is kept in memory"),
+            item(Level::Staff, "Trending terms need a faster path than the daily rebuild — the two-tier merge"),
+        ],
+    },
+    Scenario {
+        id: "object-storage",
+        title: "Object Storage (S3)",
+        prompt: "Design a durable object store with an HTTP API.",
+        difficulty: Difficulty::Hard,
+        functional: &[
+            "PUT and GET an object by bucket and key",
+            "List keys in a bucket by prefix",
+            "Objects range from bytes to terabytes",
+        ],
+        non_functional: &[
+            "Eleven nines of durability",
+            "Reads served globally",
+            "Storage cost matters more than write latency",
+        ],
+        rubric: &[
+            item(Level::Junior, "Metadata (key to location) is stored separately from the object bytes"),
+            item(Level::Junior, "Large objects are split into chunks rather than stored as one blob"),
+            item(Level::Senior, "Replication or erasure coding, and the durability-versus-cost trade-off"),
+            item(Level::Senior, "The metadata index is the scaling bottleneck — how it partitions"),
+            item(Level::Staff, "Background repair: detecting and rebuilding lost replicas before they compound"),
+        ],
+    },
+    Scenario {
+        id: "payment-ledger",
+        title: "Payment Ledger",
+        prompt: "Design the ledger behind a payments product.",
+        difficulty: Difficulty::Hard,
+        functional: &[
+            "Move money between two accounts",
+            "Report a balance for any account at any point in time",
+            "Reverse or refund a prior transaction",
+        ],
+        non_functional: &[
+            "Money is never created or destroyed",
+            "10k transfers/sec",
+            "Every balance change is auditable years later",
+        ],
+        rubric: &[
+            item(Level::Junior, "Double-entry: every movement is two matching entries, and balance is derived"),
+            item(Level::Junior, "Entries are append-only — never updated or deleted in place"),
+            item(Level::Senior, "Idempotency so a retried transfer request does not move money twice"),
+            item(Level::Senior, "Balance snapshots so reads do not replay the whole history"),
+            item(Level::Staff, "Cross-shard transfers when the two accounts are not co-located"),
+        ],
+    },
+    Scenario {
+        id: "metrics-pipeline",
+        title: "Metrics Pipeline",
+        prompt: "Design the ingestion and query path for a metrics system.",
+        difficulty: Difficulty::Hard,
+        functional: &[
+            "Ingest time-series points from millions of hosts",
+            "Query ranges and aggregates for dashboards",
+            "Alert when a series crosses a threshold",
+        ],
+        non_functional: &[
+            "10M points/sec ingest",
+            "Dashboard queries over a day of data return in under a second",
+            "Retain two years at a coarser resolution",
+        ],
+        rubric: &[
+            item(Level::Junior, "Ingest is buffered through a queue, decoupled from the write to storage"),
+            item(Level::Junior, "A time-series store, not a row per point in a relational table"),
+            item(Level::Senior, "Rollups and downsampling drive retention and query speed"),
+            item(Level::Senior, "Partitioning by time and by series, and why time alone is not enough"),
+            item(Level::Staff, "High-cardinality labels are what actually kills the index"),
+        ],
+    },
+    Scenario {
+        id: "ride-sharing",
+        title: "Ride Sharing (Uber)",
+        prompt: "Design the matching and tracking system for a ride-hailing service.",
+        difficulty: Difficulty::Hard,
+        functional: &[
+            "Match a rider to a nearby available driver",
+            "Track the driver's location during the trip",
+            "Show the rider an ETA",
+        ],
+        non_functional: &[
+            "1M concurrent drivers reporting location every few seconds",
+            "Match within seconds of a request",
+            "Two riders are never assigned the same driver",
+        ],
+        rubric: &[
+            item(Level::Junior, "Driver locations live in a hot store keyed for proximity, not the primary DB"),
+            item(Level::Junior, "Separate the high-frequency location stream from the low-frequency trip record"),
+            item(Level::Senior, "Geospatial indexing — geohash or quadtree — and the cell-size trade-off"),
+            item(Level::Senior, "Matching must lock a driver atomically or two riders get the same car"),
+            item(Level::Staff, "Supply and demand are regional, so the system partitions by geography, not by user"),
         ],
     },
 ];

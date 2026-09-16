@@ -5,7 +5,7 @@ import { nextStage, stageIndex, STAGES, type Level, type Stage, type Topology } 
 interface CritiquePanelProps {
   scenarioId: string;
   stage: Stage;
-  difficulty: Level;
+  level: Level;
   onAdvance: (stage: Stage) => void;
   /** Read lazily so dragging nodes does not re-render this panel mid-stream. */
   getTopology: () => Topology;
@@ -22,7 +22,7 @@ interface CritiquePanelProps {
 function CritiquePanelInner({
   scenarioId,
   stage,
-  difficulty,
+  level,
   onAdvance,
   getTopology,
   notes,
@@ -63,7 +63,7 @@ function CritiquePanelInner({
 
     try {
       await streamCritique(
-        { scenarioId, topology: getTopology(), notes, stage, difficulty },
+        { scenarioId, topology: getTopology(), notes, stage, level },
         // `thinking` frames are deliberately dropped rather than ignored upstream: their
         // arrival is what proves the model is working, but their content is chain of
         // thought, which reads as mid-sentence noise. The elapsed counter says the same
@@ -78,7 +78,7 @@ function CritiquePanelInner({
     } finally {
       if (!controller.signal.aborted) setRunning(false);
     }
-  }, [scenarioId, stage, difficulty, getTopology, notes]);
+  }, [scenarioId, stage, level, getTopology, notes]);
 
   // Stopping by hand has to clear `running` itself. The `finally` in `run` deliberately
   // does not: on the auto-restart path the replacement run has already set it back to

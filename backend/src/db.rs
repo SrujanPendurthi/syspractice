@@ -63,6 +63,35 @@ pub struct SessionSummary {
     pub updated_at: String,
 }
 
+/// Per-scenario progress. Derived from `sessions` rather than tracked separately — the
+/// stage a session reached is already the whole answer.
+#[derive(Debug, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct ScenarioProgress {
+    pub scenario_id: String,
+    /// True once any session for this scenario reached the final stage. That means the
+    /// interview was walked end to end, not that the design was any good.
+    pub solved: bool,
+    pub attempts: i64,
+    pub last_seen: String,
+}
+
+pub async fn list_progress(pool: &SqlitePool) -> Result<Vec<ScenarioProgress>, AppError> {
+    // `stage = 'bottlenecks'` is 0 or 1 in SQLite, so MAX over the group is "any session
+    // got there". The literal has to match the serde tag that `stage_tag` writes.
+    let rows = sqlx::query_as::<_, ScenarioProgress>(
+        "SELECT scenario_id,
+                MAX(stage = 'bottlenecks') AS solved,
+                COUNT(*)                   AS attempts,
+                MAX(updated_at)            AS last_seen
+         FROM sessions
+         GROUP BY scenario_id",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 pub async fn connect(path: &str) -> anyhow::Result<SqlitePool> {
     let opts = SqliteConnectOptions::new()
         .filename(path)
@@ -159,6 +188,36 @@ pub async fn list_sessions(pool: &SqlitePool) -> Result<Vec<SessionSummary>, App
 mod tests {
     use super::*;
     use crate::topology::{Node, NodeKind};
+
+    #[tokio::test]
+    async fn progress_tracks_the_furthest_stage_reached() {
+        let pool = connect(":memory:").await.unwrap();
+
+        create_session(&pool, "url-shortener", &topo(1), "", Stage::HighLevel).await.unwrap();
+        create_session(&pool, "chat-app", &topo(1), "", Stage::Bottlenecks).await.unwrap();
+
+        let progress = list_progress(&pool).await.unwrap();
+        let get = |id: &str| {
+            progress.iter().find(|p| p.scenario_id == id).expect("scenario missing from progress")
+        };
+
+        assert!(!get("url-shortener").solved, "mid-interview is attempted, not solved");
+        assert!(get("chat-app").solved, "reaching the final stage is what counts as solved");
+        assert_eq!(get("chat-app").attempts, 1);
+
+        // A second attempt that stops early must not un-solve the scenario.
+        create_session(&pool, "chat-app", &topo(1), "", Stage::Requirements).await.unwrap();
+        let progress = list_progress(&pool).await.unwrap();
+        let chat = progress.iter().find(|p| p.scenario_id == "chat-app").unwrap();
+        assert!(chat.solved, "a later shallow attempt must not clear an earlier completion");
+        assert_eq!(chat.attempts, 2);
+    }
+
+    #[tokio::test]
+    async fn untouched_scenarios_are_simply_absent() {
+        let pool = connect(":memory:").await.unwrap();
+        assert!(list_progress(&pool).await.unwrap().is_empty());
+    }
 
     #[test]
     fn stage_tags_match_the_wire_format() {

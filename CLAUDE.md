@@ -46,9 +46,12 @@ backend/src/
   topology.rs    the shared domain contract
   scenarios.rs   static scenario + rubric data
 frontend/src/
-  App.tsx        owns canvas state, sidebar, session save/load
+  App.tsx        router only: /s/<id> is Workspace, everything else ProblemList
+  ProblemList.tsx  the problem table, difficulty chips, solved/attempted markers
+  Workspace.tsx  owns canvas state, sidebar, session save/load for one scenario
   Canvas.tsx     React Flow only
-  CritiquePanel.tsx  streams and renders the critique
+  CritiquePanel.tsx  notes pane, stage header, streams and renders the critique
+  useRoute.ts    pushState + popstate. Two routes did not justify a router dep
   api.ts         fetch wrappers + the SSE reader
   types.ts       topology contract + canvas conversion
 ```
@@ -91,7 +94,9 @@ llama-server -m <model.gguf> --port 8080
 * **The interview is staged, one stage per critique.** `Stage::focus()` in `critic.rs` says what to grade *and* what to ignore; without the ignore half the model drifts back to reviewing the whole design every time. The ~150-word cap is load-bearing rather than cosmetic — critiques auto-run when the canvas goes quiet, and a four-section answer never finishes before the next edit aborts it. Measured on MiniCPM: 1m38s unstaged, 36-46s per stage.
 * **Difficulty filters the rubric in Rust, not in the prompt.** `Scenario::rubric_for(level)` drops out-of-scope lines before they are ever sent. A 2B will not reliably ignore a rubric line it can see. `rubric` is `#[serde(skip)]` so it never reaches the browser either.
 * **`subscribeToIdle` in `App.tsx` must stay referentially stable.** It is a callback over a ref'd listener set precisely so `CritiquePanel` (memoized) keeps its props unchanged during a drag. Passing a changing `revision` prop instead would undo the same optimization `getTopology` exists to protect. The debounce effect's cleanup is also what gives abort-on-edit for free.
-* **Vite proxies `/api`**, so the backend has no CORS layer. Serving the frontend from anywhere other than the dev server means adding one.
+* **Vite proxies `/api`**, so the backend has no CORS layer. Serving the frontend from anywhere other than the dev server means adding one — *and* an SPA fallback, since `useRoute` relies on the dev server rewriting unknown paths like `/s/url-shortener` to `index.html`.
+* **`difficulty` and `level` are different axes and neither is a rename of the other.** `Scenario::difficulty` is Easy/Medium/Hard, how hard the problem is. `Level` is Junior/Senior/Staff, who you are being interviewed as, and it filters the rubric via `Scenario::rubric_for`. You can take an Easy problem at Staff level. The critique request's field is `level`; it was called `difficulty` until the problem list needed the other meaning.
+* **Progress is derived, not stored.** `db::list_progress` is a `GROUP BY` over `sessions` — solved means some session for that scenario reached the `bottlenecks` stage. There is no progress table and no migration for it. That is also why `Workspace` persists on stage advance rather than only on Save: without it the list stays empty for anyone who never presses the button. Solved measures that the interview was walked end to end, not that the design was good.
 * **sqlx runtime-checked queries** (`query_as`, not `query!`). No `DATABASE_URL` needed at build time, but typos are caught by tests, not the compiler.
 * **`nodeTypes` lives outside the component** in `Canvas.tsx`. Moving it inside remounts every node on every drag frame.
 * `getTopology` in `App.tsx` is a stable callback over a ref precisely so `CritiquePanel` (memoized) stays out of drag renders.

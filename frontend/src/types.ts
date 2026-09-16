@@ -39,10 +39,26 @@ export interface Scenario {
   id: string;
   title: string;
   prompt: string;
+  difficulty: Difficulty;
   functional: string[];
   nonFunctional: string[];
   // No `rubric` here on purpose: the backend marks it `#[serde(skip)]` so it never
   // reaches the browser at all. Seeing it would defeat the drill.
+}
+
+/**
+ * Mirror of `Difficulty` in `backend/src/scenarios.rs`. How hard the problem is —
+ * unrelated to `Level`, which is the seniority you choose to be interviewed at.
+ */
+export type Difficulty = 'easy' | 'medium' | 'hard';
+
+/** Mirror of `ScenarioProgress` in `backend/src/db.rs`. Absent means never attempted. */
+export interface ScenarioProgress {
+  scenarioId: string;
+  /** All five stages were walked. Attendance, not quality. */
+  solved: boolean;
+  attempts: number;
+  lastSeen: string;
 }
 
 /**
