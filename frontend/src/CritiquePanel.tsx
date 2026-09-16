@@ -80,6 +80,25 @@ function CritiquePanelInner({
     }
   }, [scenarioId, stage, difficulty, getTopology, notes]);
 
+  // Stopping by hand has to clear `running` itself. The `finally` in `run` deliberately
+  // does not: on the auto-restart path the replacement run has already set it back to
+  // true, and resetting there would flicker. Nothing else was clearing it, so Stop left
+  // the panel wedged with the elapsed counter climbing against a dead request.
+  const stop = useCallback(() => {
+    abort.current?.abort();
+    setRunning(false);
+  }, []);
+
+  // A critique belongs to the stage and scenario it was written against. Without this a
+  // stage-5 answer sits under a "Stage 1 of 5" header after New, and a stream that was
+  // in flight when the stage changed keeps appending under the new stage's name.
+  useEffect(() => {
+    abort.current?.abort();
+    setRunning(false);
+    setText('');
+    setError(null);
+  }, [stage, scenarioId]);
+
   // `run` aborts whatever is already streaming, so an edit landing mid-critique restarts
   // cleanly rather than interleaving two responses into the same panel.
   useEffect(() => (auto ? subscribeToIdle(run) : undefined), [auto, subscribeToIdle, run]);
@@ -116,7 +135,7 @@ function CritiquePanelInner({
             <p className="text-[11px] text-slate-400">{STAGES[index].label}</p>
           </div>
           <button
-            onClick={running ? () => abort.current?.abort() : run}
+            onClick={running ? stop : run}
             className="rounded bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500"
           >
             {running ? 'Stop' : 'Review'}
