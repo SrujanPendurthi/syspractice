@@ -196,11 +196,7 @@ export default function App() {
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
             rows={8}
-            // Headings only, never worked examples: the placeholder for the URL shortener
-            // used to read `100M * 365 * 500B = ~18TB`, which is the exact answer the
-            // estimation stage exists to make you derive. Same leak as showing the rubric.
-            placeholder={'Assumptions:\n\nWrites per day:\nBytes per record:\nStorage, year one:\nPeak QPS:'}
-            className="w-full resize-y rounded border border-slate-700 bg-slate-800 px-2 py-1 font-mono text-[11px] leading-relaxed text-slate-200 placeholder:text-slate-600"
+            className="w-full resize-y rounded border border-slate-700 bg-slate-800 px-2 py-1 font-mono text-[11px] leading-relaxed text-slate-200"
           />
           <p className="mt-1 text-[10px] text-slate-500">
             Requirements and back-of-the-envelope maths. The first two stages are graded on
