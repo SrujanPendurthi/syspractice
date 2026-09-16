@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Local-first system design interview trainer. Draw an architecture on a canvas, get a streamed critique from a locally-hosted model graded against a scenario rubric. `prd.md` is the scope source of truth.
+System design interview trainer. Draw an architecture on a canvas, get a streamed critique from a model graded against a scenario rubric. Originally local-first and single-user; now a hosted, multi-user service with accounts, because discussion and 1v1s cannot work any other way. `prd.md` is the scope source of truth.
 
 ## Stack (decided — no open choices)
 
@@ -13,7 +13,7 @@ Local-first system design interview trainer. Draw an architecture on a canvas, g
 * **Frontend:** React 19 + Vite + TypeScript + Tailwind v4, canvas by **@xyflow/react (React Flow) 12**, in `frontend/`.
 * **AI:** any runner speaking OpenAI-compatible `/v1/chat/completions`. No FFI — plain HTTP. `./dev` uses **Ollama** (`:11434`) when present, **llama.cpp `llama-server`** (`:8080`) when `LLAMA_MODEL` is set.
 
-Env overrides: `SYSPRACTICE_DB`, `SYSPRACTICE_ADDR`, `SYSPRACTICE_MODEL`, `LLAMA_SERVER_URL`, `LLAMA_MODEL`, `LLAMA_PORT`.
+Env overrides: `SYSPRACTICE_DB`, `SYSPRACTICE_ADDR`, `SYSPRACTICE_MODEL`, `LLAMA_SERVER_URL`, `LLAMA_MODEL`, `LLAMA_PORT`, `SYSPRACTICE_DIST`, `SYSPRACTICE_SECURE_COOKIES`, `SYSPRACTICE_CRITIQUE_QUOTA`.
 
 **The two runners differ on one field.** llama-server ignores the request's `"model"` and serves whatever it was launched with; Ollama *resolves* it and returns `404 model 'local' not found` for anything unknown. Hence `SYSPRACTICE_MODEL` (default `"local"`, correct only for llama-server). On the Ollama path `./dev` walks a preference list (MiniCPM5-2B, then qwen3:8b, then gemma4:12b) and only falls back to whatever `ollama list` prints first.
 
@@ -42,12 +42,15 @@ backend/src/
   main.rs        wiring only: env, pool, listener
   routes.rs      HTTP layer + AppState. Handlers stay thin.
   db.rs          persistence + derived progress. No HTTP types cross this boundary.
+  auth.rs        argon2, session tokens, the AuthUser/MaybeUser extractors
   error.rs       AppError, and its IntoResponse
   critic.rs      prompt construction + llama-server SSE proxy
   topology.rs    the shared domain contract
   scenarios.rs   static scenario + rubric data
 frontend/src/
-  App.tsx        router only: /s/<id> is Workspace, everything else ProblemList
+  App.tsx        AuthProvider + router: /s/<id> Workspace, /login AuthPage, else ProblemList
+  useAuth.tsx    the signed-in user, loaded once from /api/auth/me
+  AuthPage.tsx   one form, sign-in/register toggle
   ProblemList.tsx  the problem table, difficulty chips, solved/attempted markers
   Workspace.tsx  owns canvas state, sidebar, session save/load for one scenario
   Canvas.tsx     React Flow only
@@ -95,7 +98,12 @@ llama-server -m <model.gguf> --port 8080
 * **The interview is staged, one stage per critique.** `Stage::focus()` in `critic.rs` says what to grade *and* what to ignore; without the ignore half the model drifts back to reviewing the whole design every time. The ~150-word cap is load-bearing rather than cosmetic — critiques auto-run when the canvas goes quiet, and a four-section answer never finishes before the next edit aborts it. Measured on MiniCPM: 1m38s unstaged, 36-46s per stage.
 * **Difficulty filters the rubric in Rust, not in the prompt.** `Scenario::rubric_for(level)` drops out-of-scope lines before they are ever sent. A 2B will not reliably ignore a rubric line it can see. `rubric` is `#[serde(skip)]` so it never reaches the browser either.
 * **`getTopology` and `subscribeToIdle` live in `Workspace.tsx` and must stay referentially stable.** Both are callbacks over refs precisely so `CritiquePanel` (memoized) keeps its props unchanged through a drag — one reads the canvas lazily, the other hands out idle notifications without a changing `revision` prop. Break either and every drag frame re-renders a panel that is mid-stream. The debounce effect's cleanup is also what gives abort-on-edit for free.
-* **Vite proxies `/api`**, so the backend has no CORS layer. Serving the frontend from anywhere other than the dev server means adding one — *and* an SPA fallback, since `useRoute` relies on the dev server rewriting unknown paths like `/s/url-shortener` to `index.html`.
+* **There is no CORS layer, and there must not need to be.** In production the backend serves `frontend/dist` itself (`ServeDir` with a `ServeFile` fallback in `main.rs`), so the app and the API are one origin; in development Vite proxies `/api`. That `ServeFile` fallback is also the SPA rewrite `useRoute` depends on for paths like `/s/url-shortener`. Moving the frontend to a separate host reintroduces both problems *and* breaks the session cookie, which `api.ts` sends as `credentials: 'same-origin'`.
+* **"Session" means a logged-in browser. A go at a scenario is an "attempt".** The table was called `sessions` until accounts arrived; it is `attempts` now (migration `0003`), and `auth_sessions` is the auth one. Same lesson as `difficulty` vs `level` — one word, two meanings, renamed while it was still cheap.
+* **Ownership is enforced in the SQL, never in a handler.** Every user-owned query in `db.rs` carries its own `WHERE user_id = ?`. `get_attempt` had no check at all when there was one user, which would have been a direct object reference the day there were two. A miss returns `NotFound` rather than `Forbidden` on purpose: whether that id exists is not the asker's business. `db::tests::one_user_cannot_touch_anothers_attempt` asserts the dangerous case is not a 200.
+* **Inference is metered, so the idle timer is a cost.** `IDLE_MS` in `Workspace.tsx` was 8s when the model ran on the user's own laptop; it is 20s now, and `/api/critique` refuses past `SYSPRACTICE_CRITIQUE_QUOTA` (default 60/user/hour) with a 429. The `critique_log` row is written *before* the stream starts — the GPU time is spent whether or not the user stays to read it. Anonymous visitors can browse and draw but not critique, which is what makes the quota enforceable at all.
+* **Cookies are `Secure` by default and `./dev` turns that off.** Safari will not store a `Secure` cookie from `http://localhost`, so with it on every local sign-in silently fails. `SYSPRACTICE_SECURE_COOKIES=0` is a development-only escape hatch; the backend prints a warning when it is set.
+* **Password hashing runs in `spawn_blocking`.** argon2 is deliberately tens of milliseconds of CPU. On an async worker that is a stalled runtime under any concurrency. Login also runs `auth::dummy_verify` when the email matched nothing, so "no such account" and "wrong password" cost the same wall-clock time as well as returning the same string.
 * **`difficulty` and `level` are different axes and neither is a rename of the other.** `Scenario::difficulty` is Easy/Medium/Hard, how hard the problem is. `Level` is Junior/Senior/Staff, who you are being interviewed as, and it filters the rubric via `Scenario::rubric_for`. You can take an Easy problem at Staff level. The critique request's field is `level`; it was called `difficulty` until the problem list needed the other meaning.
 * **Progress is derived, not stored.** `db::list_progress` is a `GROUP BY` over `sessions` — solved means some session for that scenario reached the `bottlenecks` stage. There is no progress table and no migration for it. That is also why `Workspace` persists on stage advance rather than only on Save: without it the list stays empty for anyone who never presses the button. Solved measures that the interview was walked end to end, not that the design was good.
 * **sqlx runtime-checked queries** (`query_as`, not `query!`). No `DATABASE_URL` needed at build time, but typos are caught by tests, not the compiler.

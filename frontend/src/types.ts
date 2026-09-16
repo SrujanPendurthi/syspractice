@@ -91,11 +91,22 @@ export const LEVELS: { level: Level; label: string }[] = [
   { level: 'staff', label: 'Staff' },
 ];
 
-export interface SessionSummary {
+/**
+ * Mirror of `AttemptSummary` in `backend/src/db.rs`. An attempt is one go at a scenario;
+ * "session" now means a logged-in browser and nothing else.
+ */
+export interface AttemptSummary {
   id: number;
   scenarioId: string;
   nodeCount: number;
   updatedAt: string;
+}
+
+/** Mirror of `User` in `backend/src/db.rs`. Never carries a password hash. */
+export interface User {
+  id: number;
+  email: string;
+  displayName: string;
 }
 
 /** Palette metadata. Kept next to NodeKind so adding a kind is one edit here plus one in Rust. */

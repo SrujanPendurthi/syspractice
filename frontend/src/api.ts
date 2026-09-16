@@ -1,49 +1,94 @@
 import type {
+  AttemptSummary,
   Level,
   Scenario,
   ScenarioProgress,
-  SessionSummary,
   Stage,
   Topology,
+  User,
 } from './types';
+
+/** Thrown for a 401 so callers can tell "signed out" from "broken". */
+export class Unauthorized extends Error {}
+
+/** Thrown for a 429. Inference is metered, so this is an expected answer, not a fault. */
+export class QuotaExceeded extends Error {}
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(body.error ?? res.statusText);
+    const message = body.error ?? res.statusText;
+    if (res.status === 401) throw new Unauthorized(message);
+    if (res.status === 429) throw new QuotaExceeded(message);
+    throw new Error(message);
   }
   return res.json() as Promise<T>;
 }
 
-export const listScenarios = () => fetch('/api/scenarios').then(json<Scenario[]>);
+/**
+ * Same-origin in production, and Vite proxies `/api` in development, so the cookie rides
+ * along by default. `same-origin` is stated rather than assumed because a future move to
+ * a separate API host would otherwise silently sign everyone out.
+ */
+const send = (url: string, init?: RequestInit) =>
+  fetch(url, { credentials: 'same-origin', ...init });
 
-export const listProgress = () => fetch('/api/progress').then(json<ScenarioProgress[]>);
+const post = (url: string, body?: unknown) =>
+  send(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
 
-export const listSessions = () => fetch('/api/sessions').then(json<SessionSummary[]>);
+export const listScenarios = () => send('/api/scenarios').then(json<Scenario[]>);
 
-export const saveSession = (
+export const listProgress = () => send('/api/progress').then(json<ScenarioProgress[]>);
+
+export const listAttempts = () => send('/api/attempts').then(json<AttemptSummary[]>);
+
+export const saveAttempt = (
   scenarioId: string,
   topology: Topology,
   notes: string,
   stage: Stage,
-) =>
-  fetch('/api/sessions', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ scenarioId, topology, notes, stage }),
-  }).then(json<{ id: number }>);
+) => post('/api/attempts', { scenarioId, topology, notes, stage }).then(json<{ id: number }>);
 
-export const updateSession = (id: number, topology: Topology, notes: string, stage: Stage) =>
-  fetch(`/api/sessions/${id}`, {
+export const updateAttempt = (
+  id: number,
+  topology: Topology,
+  notes: string,
+  stage: Stage,
+) =>
+  send(`/api/attempts/${id}`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ topology, notes, stage }),
   }).then(json<{ id: number }>);
 
-export const loadSession = (id: number) =>
-  fetch(`/api/sessions/${id}`).then(
+export const loadAttempt = (id: number) =>
+  send(`/api/attempts/${id}`).then(
     json<{ id: number; scenarioId: string; topology: Topology; notes: string; stage: Stage }>,
   );
+
+// --- accounts ---------------------------------------------------------------
+
+export const register = (email: string, displayName: string, password: string) =>
+  post('/api/auth/register', { email, displayName, password }).then(json<User>);
+
+export const login = (email: string, password: string) =>
+  post('/api/auth/login', { email, password }).then(json<User>);
+
+export const logout = () => post('/api/auth/logout').then(json<{ ok: boolean }>);
+
+/** Null rather than throwing when signed out — that is the normal case, not an error. */
+export const currentUser = async (): Promise<User | null> => {
+  try {
+    return await send('/api/auth/me').then(json<User>);
+  } catch (e) {
+    if (e instanceof Unauthorized) return null;
+    throw e;
+  }
+};
 
 /** `token` is critique text; `thinking` is a reasoning model's chain of thought. */
 export type CritiqueEvent = 'token' | 'thinking';
@@ -64,7 +109,7 @@ export async function streamCritique(
   onEvent: (kind: CritiqueEvent, text: string) => void,
   signal: AbortSignal,
 ): Promise<void> {
-  const res = await fetch('/api/critique', {
+  const res = await send('/api/critique', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(req),
@@ -73,7 +118,10 @@ export async function streamCritique(
 
   if (!res.ok || !res.body) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(body.error ?? res.statusText);
+    const message = body.error ?? res.statusText;
+    if (res.status === 401) throw new Unauthorized(message);
+    if (res.status === 429) throw new QuotaExceeded(message);
+    throw new Error(message);
   }
 
   const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();

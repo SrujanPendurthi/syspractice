@@ -1,14 +1,21 @@
 //! HTTP layer. Handlers stay thin — they translate JSON to domain calls and back.
+//!
+//! Ownership is not enforced here. Every user-owned query in `db.rs` filters on `user_id`
+//! in its own SQL, so a handler cannot forget the check by forgetting a line.
+
+use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::response::sse::{KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 use serde_json::json;
 use sqlx::SqlitePool;
 
+use crate::auth::{self, AuthUser, LoginThrottle, MaybeUser};
 use crate::critic::Stage;
 use crate::error::AppError;
 use crate::scenarios::Level;
@@ -20,15 +27,26 @@ pub struct AppState {
     pub pool: SqlitePool,
     pub runner_url: String,
     pub model: String,
+    /// Failed sign-ins, in memory. See `LoginThrottle`.
+    pub throttle: Arc<LoginThrottle>,
+    /// Off for local development over plain http, on everywhere else.
+    pub secure_cookies: bool,
+    /// Critiques allowed per user per hour. Inference is billed by the second now, and
+    /// the panel re-runs itself whenever the canvas goes quiet.
+    pub critique_quota: i64,
 }
 
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/scenarios", get(list_scenarios))
         .route("/api/progress", get(list_progress))
-        .route("/api/sessions", get(list_sessions).post(create_session))
-        .route("/api/sessions/{id}", get(get_session).put(update_session))
+        .route("/api/attempts", get(list_attempts).post(create_attempt))
+        .route("/api/attempts/{id}", get(get_attempt).put(update_attempt))
         .route("/api/critique", post(critique))
+        .route("/api/auth/register", post(register))
+        .route("/api/auth/login", post(login))
+        .route("/api/auth/logout", post(logout))
+        .route("/api/auth/me", get(me))
         .with_state(state)
 }
 
@@ -36,17 +54,29 @@ async fn list_scenarios() -> impl IntoResponse {
     Json(scenarios::SCENARIOS)
 }
 
-async fn list_progress(State(s): State<AppState>) -> Result<impl IntoResponse, AppError> {
-    Ok(Json(db::list_progress(&s.pool).await?))
+/// Anonymous visitors get an empty list rather than a 401. The problem list is the
+/// landing page, and it should render for someone who has never signed in.
+async fn list_progress(
+    State(s): State<AppState>,
+    MaybeUser(user): MaybeUser,
+) -> Result<impl IntoResponse, AppError> {
+    let progress = match user {
+        Some(u) => db::list_progress(&s.pool, u.id).await?,
+        None => Vec::new(),
+    };
+    Ok(Json(progress))
 }
 
-async fn list_sessions(State(s): State<AppState>) -> Result<impl IntoResponse, AppError> {
-    Ok(Json(db::list_sessions(&s.pool).await?))
+async fn list_attempts(
+    State(s): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> Result<impl IntoResponse, AppError> {
+    Ok(Json(db::list_attempts(&s.pool, user.id).await?))
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CreateSession {
+struct CreateAttempt {
     scenario_id: String,
     topology: Topology,
     #[serde(default)]
@@ -55,14 +85,14 @@ struct CreateSession {
     stage: Stage,
 }
 
-/// A session that arrives without a stage is one that has not started the interview.
+/// An attempt that arrives without a stage is one that has not started the interview.
 fn first_stage() -> Stage {
     Stage::Requirements
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct UpdateSession {
+struct UpdateAttempt {
     topology: Topology,
     #[serde(default)]
     notes: String,
@@ -70,29 +100,38 @@ struct UpdateSession {
     stage: Stage,
 }
 
-async fn create_session(
+async fn create_attempt(
     State(s): State<AppState>,
-    Json(body): Json<CreateSession>,
+    AuthUser(user): AuthUser,
+    Json(body): Json<CreateAttempt>,
 ) -> Result<impl IntoResponse, AppError> {
-    let id =
-        db::create_session(&s.pool, &body.scenario_id, &body.topology, &body.notes, body.stage)
-            .await?;
+    let id = db::create_attempt(
+        &s.pool,
+        user.id,
+        &body.scenario_id,
+        &body.topology,
+        &body.notes,
+        body.stage,
+    )
+    .await?;
     Ok(Json(json!({ "id": id })))
 }
 
-async fn get_session(
+async fn get_attempt(
     State(s): State<AppState>,
+    AuthUser(user): AuthUser,
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
-    Ok(Json(db::get_session(&s.pool, id).await?))
+    Ok(Json(db::get_attempt(&s.pool, user.id, id).await?))
 }
 
-async fn update_session(
+async fn update_attempt(
     State(s): State<AppState>,
+    AuthUser(user): AuthUser,
     Path(id): Path<i64>,
-    Json(body): Json<UpdateSession>,
+    Json(body): Json<UpdateAttempt>,
 ) -> Result<impl IntoResponse, AppError> {
-    db::update_session(&s.pool, id, &body.topology, &body.notes, body.stage).await?;
+    db::update_attempt(&s.pool, user.id, id, &body.topology, &body.notes, body.stage).await?;
     Ok(Json(json!({ "id": id })))
 }
 
@@ -115,14 +154,102 @@ fn default_level() -> Level {
 
 async fn critique(
     State(s): State<AppState>,
+    AuthUser(user): AuthUser,
     Json(body): Json<CritiqueRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let scenario = scenarios::find(&body.scenario_id).ok_or(AppError::NotFound)?;
+
+    if db::critiques_in_last_hour(&s.pool, user.id).await? >= s.critique_quota {
+        return Err(AppError::QuotaExceeded(s.critique_quota));
+    }
+
     let system = critic::system_prompt(body.level, body.stage);
     let prompt = critic::build_prompt(scenario, &body.topology, &body.notes, body.level);
     let stream = critic::stream_critique(&s.runner_url, &s.model, system, prompt).await?;
 
+    // Logged once the runner has accepted the request, and before a single token is read.
+    // Metering on completion would give a free critique to anyone who closes the tab, and
+    // the GPU time is spent either way.
+    db::log_critique(&s.pool, user.id).await?;
+
     // Keep-alive comments stop proxies from closing the connection while the model
     // is still loading the prompt and has emitted no tokens yet.
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+// --- accounts ----------------------------------------------------------------
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Register {
+    email: String,
+    display_name: String,
+    password: String,
+}
+
+#[derive(Deserialize)]
+struct Login {
+    email: String,
+    password: String,
+}
+
+async fn register(
+    State(s): State<AppState>,
+    jar: CookieJar,
+    Json(body): Json<Register>,
+) -> Result<impl IntoResponse, AppError> {
+    auth::check_email(&body.email)?;
+    auth::check_password_rules(&body.password)?;
+
+    let name = body.display_name.trim();
+    if name.is_empty() || name.chars().count() > 40 {
+        return Err(AppError::Invalid("pick a display name of 1 to 40 characters"));
+    }
+
+    let hash = auth::hash_password(body.password).await?;
+    let user = db::create_user(&s.pool, body.email.trim(), name, &hash).await?;
+
+    let token = auth::issue_session(&s, user.id).await?;
+    Ok((auth::set_cookie(jar, token, s.secure_cookies), Json(user)))
+}
+
+async fn login(
+    State(s): State<AppState>,
+    jar: CookieJar,
+    Json(body): Json<Login>,
+) -> Result<impl IntoResponse, AppError> {
+    let key = db::fold_email(&body.email);
+    s.throttle.check(&key)?;
+
+    let found = db::find_user_for_login(&s.pool, &body.email).await?;
+
+    // No such account still costs an argon2 verify, so the two failures are not
+    // distinguishable by how long they take.
+    let Some((user, hash)) = found else {
+        auth::dummy_verify(body.password).await;
+        s.throttle.record_failure(&key);
+        return Err(AppError::BadCredentials);
+    };
+
+    if !auth::verify_password(body.password, hash).await? {
+        s.throttle.record_failure(&key);
+        return Err(AppError::BadCredentials);
+    }
+
+    s.throttle.clear(&key);
+    let token = auth::issue_session(&s, user.id).await?;
+    Ok((auth::set_cookie(jar, token, s.secure_cookies), Json(user)))
+}
+
+async fn logout(State(s): State<AppState>, jar: CookieJar) -> Result<impl IntoResponse, AppError> {
+    // Delete the row as well as the cookie: a token that survives on a copied cookie jar
+    // is the difference between signing out and hiding the evidence.
+    if let Some(token) = jar.get(auth::COOKIE).map(|c| c.value().to_string()) {
+        db::delete_auth_session(&s.pool, &auth::token_hash(&token)).await?;
+    }
+    Ok((auth::clear_cookie(jar, s.secure_cookies), Json(json!({ "ok": true }))))
+}
+
+async fn me(AuthUser(user): AuthUser) -> impl IntoResponse {
+    Json(user)
 }

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { listProgress, listScenarios } from './api';
 import type { Difficulty, Scenario, ScenarioProgress } from './types';
+import { useAuth } from './useAuth';
 
 const DIFFICULTY_TEXT: Record<Difficulty, string> = {
   easy: 'text-easy-ink',
@@ -18,9 +19,11 @@ const ORDER: Difficulty[] = ['easy', 'medium', 'hard'];
 
 interface ProblemListProps {
   onOpen: (scenarioId: string) => void;
+  onSignIn: () => void;
 }
 
-export function ProblemList({ onOpen }: ProblemListProps) {
+export function ProblemList({ onOpen, onSignIn }: ProblemListProps) {
+  const { user, signOut } = useAuth();
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [progress, setProgress] = useState<ScenarioProgress[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -29,8 +32,13 @@ export function ProblemList({ onOpen }: ProblemListProps) {
     listScenarios().then(setScenarios).catch((e) => setError(e.message));
     // Best-effort: an empty table and a failed request both mean "nothing solved yet",
     // which is what a first run should look like anyway.
-    listProgress().then(setProgress).catch(() => undefined);
   }, []);
+
+  // Progress is per account, so signing in or out has to refetch rather than leave the
+  // previous answer on screen. Signed out the server returns an empty list by design.
+  useEffect(() => {
+    listProgress().then(setProgress).catch(() => setProgress([]));
+  }, [user]);
 
   const byId = useMemo(
     () => new Map(progress.map((p) => [p.scenarioId, p])),
@@ -71,6 +79,19 @@ export function ProblemList({ onOpen }: ProblemListProps) {
             syspractice
           </span>
           <span className="text-[13px] text-ink-dim">System design interview drills</span>
+
+          {user ? (
+            <span className="ml-auto flex items-baseline gap-3 text-[13px]">
+              <span className="text-ink-dim">{user.displayName}</span>
+              <button onClick={() => void signOut()} className="text-ink-dim hover:text-ink">
+                Sign out
+              </button>
+            </span>
+          ) : (
+            <button onClick={onSignIn} className="ml-auto text-[13px] text-easy-ink">
+              Sign in
+            </button>
+          )}
         </div>
       </header>
 
@@ -150,8 +171,20 @@ export function ProblemList({ onOpen }: ProblemListProps) {
           </dl>
 
           <p className="mt-6 border-t border-line pt-4 text-[12px] leading-relaxed text-ink-dim">
-            A problem counts as solved once you have worked all five interview stages. It
-            tracks that you went the distance, not that the design was good.
+            {user ? (
+              <>
+                A problem counts as solved once you have worked all five interview stages.
+                It tracks that you went the distance, not that the design was good.
+              </>
+            ) : (
+              <>
+                <button onClick={onSignIn} className="text-easy-ink underline underline-offset-2">
+                  Sign in
+                </button>{' '}
+                to track which problems you have worked. Browsing and drawing do not need
+                an account.
+              </>
+            )}
           </p>
         </aside>
       </main>

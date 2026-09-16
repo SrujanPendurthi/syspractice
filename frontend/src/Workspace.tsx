@@ -3,7 +3,8 @@ import { useEdgesState, useNodesState } from '@xyflow/react';
 
 import { Canvas } from './Canvas';
 import { CritiquePanel } from './CritiquePanel';
-import { listScenarios, listSessions, loadSession, saveSession, updateSession } from './api';
+import { listAttempts, listScenarios, loadAttempt, saveAttempt, updateAttempt, Unauthorized } from './api';
+import { useAuth } from './useAuth';
 import {
   fromTopology,
   LEVELS,
@@ -14,7 +15,7 @@ import {
   type Level,
   type NodeKind,
   type Scenario,
-  type SessionSummary,
+  type AttemptSummary,
   type Stage,
   type Difficulty,
 } from './types';
@@ -25,8 +26,13 @@ const DIFFICULTY_TEXT: Record<Difficulty, string> = {
   hard: 'text-hard-ink',
 };
 
-/** How long the canvas and notes must sit still before the critic starts on its own. */
-const IDLE_MS = 8000;
+/**
+ * How long the canvas and notes must sit still before the critic starts on its own.
+ * Eight seconds was right when the model ran on your own laptop and cost nothing but fan
+ * noise. Server-side inference is billed by the second, and a pause this short fires at
+ * people who are still thinking.
+ */
+const IDLE_MS = 20000;
 
 let nodeSeq = 0;
 const nextId = () => `n${Date.now().toString(36)}${nodeSeq++}`;
@@ -34,12 +40,14 @@ const nextId = () => `n${Date.now().toString(36)}${nodeSeq++}`;
 interface WorkspaceProps {
   scenarioId: string;
   onBack: () => void;
+  onSignIn: () => void;
 }
 
-export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
+export function Workspace({ scenarioId, onBack, onSignIn }: WorkspaceProps) {
+  const { user, clear } = useAuth();
   const [scenario, setScenario] = useState<Scenario | null>(null);
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [sessionId, setSessionId] = useState<number | null>(null);
+  const [attempts, setAttempts] = useState<AttemptSummary[]>([]);
+  const [attemptId, setAttemptId] = useState<number | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [notes, setNotes] = useState('');
   const [stage, setStage] = useState<Stage>('requirements');
@@ -76,8 +84,19 @@ export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
     listScenarios()
       .then((all) => setScenario(all.find((s) => s.id === scenarioId) ?? null))
       .catch((e) => setStatus(`Backend unreachable: ${e.message}`));
-    listSessions().then(setSessions).catch(() => undefined);
   }, [scenarioId]);
+
+  // Signing in or out changes whose attempts these are, so the list is keyed on the user
+  // rather than fetched once — otherwise signing out leaves the previous account's
+  // attempts sitting in the sidebar.
+  useEffect(() => {
+    if (!user) {
+      setAttempts([]);
+      setAttemptId(null);
+      return;
+    }
+    listAttempts().then(setAttempts).catch(() => undefined);
+  }, [user]);
 
   const addNode = (kind: NodeKind) =>
     setNodes((ns) => [
@@ -91,41 +110,49 @@ export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
     ]);
 
   const persist = async (at: Stage) => {
-    if (!scenario) return null;
+    if (!scenario || !user) return null;
     const topology = getTopology();
-    const { id } = sessionId
-      ? await updateSession(sessionId, topology, notes, at)
-      : await saveSession(scenario.id, topology, notes, at);
-    setSessionId(id);
-    setSessions(await listSessions());
+    const { id } = attemptId
+      ? await updateAttempt(attemptId, topology, notes, at)
+      : await saveAttempt(scenario.id, topology, notes, at);
+    setAttemptId(id);
+    setAttempts(await listAttempts());
     return id;
   };
 
   const save = async () => {
+    if (!user) {
+      setStatus('Sign in to save this attempt');
+      return;
+    }
     try {
       const id = await persist(stage);
-      if (id !== null) setStatus(`Saved session #${id}`);
+      if (id !== null) setStatus(`Saved attempt #${id}`);
     } catch (e) {
+      // An expired cookie shows up here as a 401. Clearing the user swaps the UI over to
+      // the signed-out state instead of leaving it insisting the save should have worked.
+      if (e instanceof Unauthorized) clear();
       setStatus(e instanceof Error ? e.message : String(e));
     }
   };
 
   const open = async (id: number) => {
-    const s = await loadSession(id);
-    const { nodes: n, edges: e } = fromTopology(s.topology);
+    const a = await loadAttempt(id);
+    const { nodes: n, edges: e } = fromTopology(a.topology);
     setNodes(n);
     setEdges(e);
-    setNotes(s.notes);
-    setStage(s.stage);
-    setSessionId(s.id);
-    setStatus(`Opened session #${s.id}`);
+    setNotes(a.notes);
+    setStage(a.stage);
+    setAttemptId(a.id);
+    setStatus(`Opened attempt #${a.id}`);
   };
 
-  // Progress on the problem list is derived from saved sessions, so advancing has to
-  // persist or the list stays empty for anyone who never presses Save.
+  // Progress on the problem list is derived from saved attempts, so advancing has to
+  // persist or the list stays empty for anyone who never presses Save. Signed out there
+  // is nothing to persist to, and the stage still has to move.
   const advance = (next: Stage) => {
     setStage(next);
-    void persist(next);
+    void persist(next).catch(() => undefined);
   };
 
   const reset = () => {
@@ -133,7 +160,7 @@ export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
     setEdges([]);
     setNotes('');
     setStage('requirements');
-    setSessionId(null);
+    setAttemptId(null);
     setStatus(null);
   };
 
@@ -201,29 +228,37 @@ export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
           </ul>
         </Section>
 
-        <Section title="Session">
+        <Section title="Attempt">
           <div className="flex gap-1">
             <button onClick={save} className="flex-1 rounded border border-line bg-page px-2 py-1.5 text-[12px] hover:border-ink-faint">
-              {sessionId ? `Save #${sessionId}` : 'Save'}
+              {attemptId ? `Save #${attemptId}` : 'Save'}
             </button>
             <button onClick={reset} className="rounded border border-line bg-page px-2 py-1.5 text-[12px] hover:border-ink-faint">
               Start over
             </button>
           </div>
-          {/* Only this problem's sessions. The list used to carry every scenario's, which
+          {!user && (
+            <p className="mt-2 text-[11px] leading-relaxed text-ink-dim">
+              <button onClick={onSignIn} className="text-easy-ink underline underline-offset-2">
+                Sign in
+              </button>{' '}
+              to save this attempt and keep your progress.
+            </p>
+          )}
+          {/* Only this problem's attempts. The list used to carry every scenario's, which
               was harmless when a dropdown set the scenario and actively wrong once the
               route does — opening one would load another problem's diagram under this
               problem's requirements. */}
           <ul className="mt-2 space-y-1">
-            {sessions
-              .filter((s) => s.scenarioId === scenarioId)
-              .map((s) => (
-              <li key={s.id}>
+            {attempts
+              .filter((a) => a.scenarioId === scenarioId)
+              .map((a) => (
+              <li key={a.id}>
                 <button
-                  onClick={() => open(s.id)}
+                  onClick={() => open(a.id)}
                   className="w-full rounded px-2 py-1 text-left text-[12px] text-ink-dim hover:bg-line/50"
                 >
-                  #{s.id} · {s.nodeCount} nodes · {s.updatedAt.slice(0, 10)}
+                  #{a.id} · {a.nodeCount} nodes · {a.updatedAt.slice(0, 10)}
                 </button>
               </li>
               ))}
@@ -252,6 +287,8 @@ export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
           notes={notes}
           onNotesChange={setNotes}
           subscribeToIdle={subscribeToIdle}
+          signedIn={!!user}
+          onSignIn={onSignIn}
         />
       )}
     </div>

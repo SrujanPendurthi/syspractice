@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { streamCritique } from './api';
+import { QuotaExceeded, streamCritique, Unauthorized } from './api';
 import { nextStage, stageIndex, STAGES, type Level, type Stage, type Topology } from './types';
 
 interface CritiquePanelProps {
@@ -17,6 +17,9 @@ interface CritiquePanelProps {
    * every drag frame, which is the thing `memo` is here to prevent.
    */
   subscribeToIdle: (cb: () => void) => () => void;
+  /** Critiques cost GPU time, so they are the one thing that needs an account. */
+  signedIn: boolean;
+  onSignIn: () => void;
 }
 
 function CritiquePanelInner({
@@ -28,11 +31,15 @@ function CritiquePanelInner({
   notes,
   onNotesChange,
   subscribeToIdle,
+  signedIn,
+  onSignIn,
 }: CritiquePanelProps) {
   const [text, setText] = useState('');
   const [running, setRunning] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  /** Signed out, or out of critiques for the hour. Not an error — a state with an action. */
+  const [limit, setLimit] = useState<string | null>(null);
   const [auto, setAuto] = useState(true);
   const abort = useRef<AbortController | null>(null);
   const startedAt = useRef(0);
@@ -51,12 +58,16 @@ function CritiquePanelInner({
   }, [running]);
 
   const run = useCallback(async () => {
+    // Auto-review fires on a timer, so this guard is what stops a signed-out visitor
+    // generating a 401 every twenty seconds while they draw.
+    if (!signedIn) return;
     abort.current?.abort();
     const controller = new AbortController();
     abort.current = controller;
 
     setText('');
     setError(null);
+    setLimit(null);
     setRunning(true);
     startedAt.current = Date.now();
     setElapsed(0);
@@ -74,11 +85,20 @@ function CritiquePanelInner({
         controller.signal,
       );
     } catch (e) {
-      if (!controller.signal.aborted) setError(e instanceof Error ? e.message : String(e));
+      if (controller.signal.aborted) {
+        // Nothing to report: the user edited, advanced a stage, or pressed Stop.
+      } else if (e instanceof Unauthorized || e instanceof QuotaExceeded) {
+        // Both are normal answers rather than faults, and both have a specific thing the
+        // reader can do about them, so they get their own line rather than a red box.
+        setError(null);
+        setLimit(e.message);
+      } else {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     } finally {
       if (!controller.signal.aborted) setRunning(false);
     }
-  }, [scenarioId, stage, level, getTopology, notes]);
+  }, [scenarioId, stage, level, getTopology, notes, signedIn]);
 
   // Stopping by hand has to clear `running` itself. The `finally` in `run` deliberately
   // does not: on the auto-restart path the replacement run has already set it back to
@@ -97,6 +117,7 @@ function CritiquePanelInner({
     setRunning(false);
     setText('');
     setError(null);
+    setLimit(null);
   }, [stage, scenarioId]);
 
   // `run` aborts whatever is already streaming, so an edit landing mid-critique restarts
@@ -133,10 +154,10 @@ function CritiquePanelInner({
             <p className="text-[12px] text-ink-dim">{STAGES[index].label}</p>
           </div>
           <button
-            onClick={running ? stop : run}
+            onClick={running ? stop : signedIn ? run : onSignIn}
             className="rounded bg-easy-ink px-3 py-1.5 text-[12px] font-medium text-white hover:brightness-110"
           >
-            {running ? 'Stop' : 'Review'}
+            {running ? 'Stop' : signedIn ? 'Review' : 'Sign in to review'}
           </button>
         </div>
 
@@ -176,11 +197,22 @@ function CritiquePanelInner({
             {error}
           </p>
         )}
-        {!error && !text && !running && (
+        {limit && (
+          <p className="rounded border border-line bg-page px-3 py-2 text-[13px] leading-relaxed text-ink-dim">
+            {limit}{' '}
+            {!signedIn && (
+              <button onClick={onSignIn} className="text-easy-ink underline underline-offset-2">
+                Sign in
+              </button>
+            )}
+          </p>
+        )}
+        {!error && !limit && !text && !running && (
           <p className="text-[13px] leading-relaxed text-ink-dim">
             Draw your architecture and write down your assumptions. The critic works one
             stage at a time and pushes back with a question rather than handing over the
-            answer.
+            answer.{' '}
+            {!signedIn && 'Reviewing needs an account; drawing does not.'}
           </p>
         )}
         {/* A reasoning model can think for a minute before emitting any critique text, so

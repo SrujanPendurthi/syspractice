@@ -14,6 +14,9 @@ export LLAMA_SERVER_URL="http://127.0.0.1:${llama_port}"
 export SYSPRACTICE_ADDR="${SYSPRACTICE_ADDR:-127.0.0.1:8787}"
 # Pin the DB to the backend dir so it lands in the same place no matter where you run from.
 export SYSPRACTICE_DB="${SYSPRACTICE_DB:-$root/backend/syspractice.db}"
+# Safari refuses to store a Secure cookie from http://localhost, which would leave every
+# sign-in here silently failing. Production leaves this unset and gets Secure cookies.
+export SYSPRACTICE_SECURE_COOKIES="${SYSPRACTICE_SECURE_COOKIES:-0}"
 
 pids=()
 
