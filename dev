@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# Start everything: model runner (optional), backend, frontend. Ctrl-C stops all of them.
+set -euo pipefail
+
+# Job control, so each background job leads its own process group. `cargo run` and
+# `npm run dev` both spawn the real server as a grandchild — killing only the direct
+# child orphans it and leaves the port bound.
+set -m
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+llama_port="${LLAMA_PORT:-8080}"
+export LLAMA_SERVER_URL="http://127.0.0.1:${llama_port}"
+export SYSPRACTICE_ADDR="${SYSPRACTICE_ADDR:-127.0.0.1:8787}"
+# Pin the DB to the backend dir so it lands in the same place no matter where you run from.
+export SYSPRACTICE_DB="${SYSPRACTICE_DB:-$root/backend/syspractice.db}"
+
+pids=()
+
+cleanup() {
+  trap - EXIT INT TERM
+  # Negative PID = whole process group, so grandchildren go too.
+  for p in "${pids[@]:-}"; do
+    [[ -n "$p" ]] && kill -TERM "-$p" 2>/dev/null || true
+  done
+  wait 2>/dev/null
+  return 0
+}
+trap cleanup EXIT INT TERM
+
+# --- model runner ------------------------------------------------------------
+# Explicit LLAMA_MODEL picks llama.cpp; otherwise fall back to Ollama if it is installed.
+# Both speak the same OpenAI-compatible API, they differ only in whether the request's
+# "model" field is honoured (Ollama) or ignored (llama-server).
+if [[ -n "${LLAMA_MODEL:-}" ]]; then
+  if command -v llama-server >/dev/null 2>&1; then
+    echo "==> llama-server on :${llama_port} ($(basename "$LLAMA_MODEL"))"
+    llama-server -m "$LLAMA_MODEL" --port "$llama_port" </dev/null &
+    pids+=($!)
+    export SYSPRACTICE_MODEL="${SYSPRACTICE_MODEL:-local}"
+  else
+    echo "!!  LLAMA_MODEL is set but llama-server is not on PATH — critique will 502" >&2
+  fi
+
+elif command -v ollama >/dev/null 2>&1; then
+  export LLAMA_SERVER_URL="http://127.0.0.1:11434"
+
+  # Reuse an already-running daemon rather than starting a second one; only tear down
+  # an instance this script owns.
+  if ! curl -sf -m 2 "${LLAMA_SERVER_URL}/api/tags" >/dev/null 2>&1; then
+    echo "==> starting ollama"
+    ollama serve </dev/null >/dev/null 2>&1 &
+    pids+=($!)
+    for _ in $(seq 1 30); do
+      curl -sf -m 1 "${LLAMA_SERVER_URL}/api/tags" >/dev/null 2>&1 && break
+      sleep 1
+    done
+  fi
+
+  # Ollama resolves the model name, so a wrong one is a 404 at critique time.
+  if [[ -z "${SYSPRACTICE_MODEL:-}" ]]; then
+    SYSPRACTICE_MODEL="$(ollama list 2>/dev/null | awk 'NR==2 {print $1}')"
+    export SYSPRACTICE_MODEL
+  fi
+
+  if [[ -n "${SYSPRACTICE_MODEL:-}" ]]; then
+    echo "==> ollama on :11434 (${SYSPRACTICE_MODEL})"
+  else
+    echo "!!  ollama has no models — run 'ollama pull qwen3:8b'. Critique will 502." >&2
+  fi
+
+else
+  echo "!!  no model runner found; critique will 502. Install ollama, or:"
+  echo "    LLAMA_MODEL=/path/to/model.gguf ./dev"
+fi
+
+# --- backend ----------------------------------------------------------------
+echo "==> backend on http://${SYSPRACTICE_ADDR}"
+cargo run --quiet --manifest-path "$root/backend/Cargo.toml" </dev/null &
+pids+=($!)
+
+# --- frontend ---------------------------------------------------------------
+[[ -d "$root/frontend/node_modules" ]] || npm --prefix "$root/frontend" install
+
+# Hold the frontend until the backend answers. On a cold cargo build this is a minute
+# of compiling; starting vite first just means the first page load fails its API calls.
+printf '==> waiting for backend'
+for _ in $(seq 1 300); do
+  curl -sf "http://${SYSPRACTICE_ADDR}/api/scenarios" >/dev/null 2>&1 && break
+  printf '.'
+  sleep 1
+done
+echo
+
+echo "==> frontend on http://localhost:5173"
+# stdin detached: with job control on, a child that reads stdin gets SIGTTIN and
+# suspends. Costs vite's keyboard shortcuts, saves the dev server freezing.
+npm --prefix "$root/frontend" run dev </dev/null &
+pids+=($!)
+
+# ponytail: macOS ships bash 3.2, which has no `wait -n`, so one child crashing leaves
+# the others running rather than tearing everything down. Ctrl-C still cleans up all of
+# them. Swap to `wait -n` if this ever runs under a guaranteed bash 4+.
+wait

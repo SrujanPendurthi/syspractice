@@ -1,0 +1,12 @@
+.DS_Store
+
+# Rust
+backend/target/
+*.db
+*.db-shm
+*.db-wal
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
