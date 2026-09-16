@@ -1,7 +1,56 @@
 @import 'tailwindcss';
 
+/* LeetCode's difficulty triad is the anchor of the palette — they are the only
+   saturated colours in the product, and they carry meaning everywhere they appear.
+   Everything structural stays greyscale so the three read instantly. */
+@theme {
+  --color-page: #ffffff;
+  --color-surface: #f7f8fa;
+  --color-line: #e5e7eb;
+  --color-ink: #262626;
+  --color-ink-dim: #6b7280;
+  --color-ink-faint: #9ca3af;
+
+  /* Vivid, for shapes: ring arcs, dots, fills. Large areas, so contrast is not at issue. */
+  --color-easy: #00b8a3;
+  --color-medium: #ffb800;
+  --color-hard: #ff375f;
+
+  /* Darkened for type. The vivid triad on white runs 1.9:1 to 2.9:1, which fails as text
+     no matter how familiar it looks. Same hues, enough luminance to read. */
+  --color-easy-ink: #06776b;
+  --color-medium-ink: #8a5a06;
+  --color-hard-ink: #c4123f;
+
+  --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', monospace;
+}
+
 html,
 body,
 #root {
   height: 100%;
+}
+
+body {
+  background: var(--color-page);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Keyboard focus has to stay visible on a page this quiet. */
+:focus-visible {
+  outline: 2px solid var(--color-easy);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

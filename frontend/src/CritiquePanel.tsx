@@ -107,36 +107,34 @@ function CritiquePanelInner({
   const next = nextStage(stage);
 
   return (
-    <section className="flex h-full w-[28rem] shrink-0 flex-col border-l border-slate-800 bg-slate-900">
+    <section className="flex w-full shrink-0 flex-col border-t border-line bg-surface lg:h-full lg:w-[28rem] lg:border-t-0 lg:border-l">
       {/* Stages 1 and 2 are graded on these notes, so they sit next to the critique that
           grades them rather than across the window in the sidebar. */}
-      <div className="border-b border-slate-800 px-4 py-3">
-        <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-          Notes
-        </h2>
+      <div className="border-b border-line px-4 py-3">
+        <h2 className="mb-2 text-[12px] font-medium text-ink-dim">Notes</h2>
         <textarea
           value={notes}
           onChange={(e) => onNotesChange(e.target.value)}
           rows={7}
-          className="w-full resize-y rounded border border-slate-700 bg-slate-800 px-2 py-1 font-mono text-[11px] leading-relaxed text-slate-200"
+          className="w-full resize-y rounded border border-line bg-page px-2 py-1.5 font-mono text-[12px] leading-relaxed text-ink"
         />
-        <p className="mt-1 text-[10px] text-slate-500">
+        <p className="mt-1.5 text-[11px] leading-relaxed text-ink-dim">
           Requirements and back-of-the-envelope maths. The first two stages are graded on
           this, not on the diagram.
         </p>
       </div>
 
-      <header className="border-b border-slate-800 px-4 py-3">
+      <header className="border-b border-line px-4 py-3">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-sm font-semibold text-slate-200">
+            <h2 className="text-[14px] font-semibold">
               Stage {index + 1} of {STAGES.length}
             </h2>
-            <p className="text-[11px] text-slate-400">{STAGES[index].label}</p>
+            <p className="text-[12px] text-ink-dim">{STAGES[index].label}</p>
           </div>
           <button
             onClick={running ? stop : run}
-            className="rounded bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500"
+            className="rounded bg-easy-ink px-3 py-1.5 text-[12px] font-medium text-white hover:brightness-110"
           >
             {running ? 'Stop' : 'Review'}
           </button>
@@ -148,25 +146,25 @@ function CritiquePanelInner({
               <span
                 key={s.stage}
                 title={s.label}
-                className={`h-1.5 w-6 rounded-full ${i <= index ? 'bg-emerald-500' : 'bg-slate-700'}`}
+                className={`h-1.5 w-6 rounded-full ${i <= index ? 'bg-easy' : 'bg-line'}`}
               />
             ))}
           </div>
           <button
             onClick={() => next && onAdvance(next)}
             disabled={!next}
-            className="ml-auto rounded px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-800 disabled:text-slate-600 disabled:hover:bg-transparent"
+            className="ml-auto rounded px-2 py-0.5 text-[12px] text-ink-dim hover:bg-line/60 hover:text-ink disabled:text-ink-faint/60 disabled:hover:bg-transparent"
           >
-            {next ? 'Next stage →' : 'Last stage'}
+            {next ? 'Next stage' : 'Last stage'}
           </button>
         </div>
 
-        <label className="mt-2 flex items-center gap-1.5 text-[10px] text-slate-500">
+        <label className="mt-2.5 flex items-center gap-1.5 text-[11px] text-ink-dim">
           <input
             type="checkbox"
             checked={auto}
             onChange={(e) => setAuto(e.target.checked)}
-            className="h-3 w-3 accent-emerald-600"
+            className="h-3 w-3 accent-easy"
           />
           Review automatically once I stop editing
         </label>
@@ -174,26 +172,27 @@ function CritiquePanelInner({
 
       <div className="flex-1 overflow-y-auto px-4 py-3">
         {error && (
-          <p className="rounded border border-red-800 bg-red-950 px-3 py-2 text-xs text-red-300">
+          <p className="rounded border border-hard/30 bg-hard/5 px-3 py-2 text-[13px] text-hard-ink">
             {error}
           </p>
         )}
         {!error && !text && !running && (
-          <p className="text-xs text-slate-500">
-            Draw your architecture and write your assumptions. The critic takes one stage at
-            a time and pushes back with a question rather than handing over the answer.
+          <p className="text-[13px] leading-relaxed text-ink-dim">
+            Draw your architecture and write down your assumptions. The critic works one
+            stage at a time and pushes back with a question rather than handing over the
+            answer.
           </p>
         )}
         {/* A reasoning model can think for a minute before emitting any critique text, so
             silence here is indistinguishable from a hang. The counter is the proof. */}
         {running && !text && (
-          <p className="flex items-center gap-2 text-xs text-slate-500">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+          <p className="flex items-center gap-2 text-[13px] text-ink-dim">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-easy" />
             Thinking… {elapsed}s
           </p>
         )}
 
-        <pre className="whitespace-pre-wrap font-sans text-xs leading-relaxed text-slate-300">
+        <pre className="whitespace-pre-wrap font-sans text-[13px] leading-[1.65] text-ink">
           {text}
           {running && <span className="animate-pulse">▍</span>}
         </pre>

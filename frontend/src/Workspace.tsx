@@ -16,7 +16,14 @@ import {
   type Scenario,
   type SessionSummary,
   type Stage,
+  type Difficulty,
 } from './types';
+
+const DIFFICULTY_TEXT: Record<Difficulty, string> = {
+  easy: 'text-easy-ink',
+  medium: 'text-medium-ink',
+  hard: 'text-hard-ink',
+};
 
 /** How long the canvas and notes must sit still before the critic starts on its own. */
 const IDLE_MS = 8000;
@@ -131,26 +138,30 @@ export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
   };
 
   return (
-    <div className="flex h-screen w-screen bg-slate-950 text-slate-100">
-      <aside className="flex w-72 shrink-0 flex-col overflow-y-auto border-r border-slate-800 bg-slate-900">
-        <div className="border-b border-slate-800 px-4 py-3">
-          <button
-            onClick={onBack}
-            className="text-[11px] text-slate-400 hover:text-slate-200"
-          >
-            ← All problems
+    <div className="flex h-screen w-screen flex-col bg-page text-ink lg:flex-row">
+      <aside className="flex w-full shrink-0 flex-col overflow-y-auto border-b border-line bg-surface lg:w-72 lg:border-r lg:border-b-0">
+        <div className="border-b border-line px-4 py-3">
+          <button onClick={onBack} className="text-[12px] text-ink-dim hover:text-ink">
+            All problems
           </button>
-          <h1 className="mt-1 text-sm font-semibold">{scenario?.title ?? 'syspractice'}</h1>
-          {status && <p className="mt-1 text-[11px] text-slate-400">{status}</p>}
+          <h1 className="mt-1.5 flex items-baseline gap-2 text-[15px] font-semibold">
+            {scenario?.title ?? 'syspractice'}
+            {scenario && (
+              <span className={`text-[12px] font-normal capitalize ${DIFFICULTY_TEXT[scenario.difficulty]}`}>
+                {scenario.difficulty}
+              </span>
+            )}
+          </h1>
+          {status && <p className="mt-1 text-[11px] text-ink-dim">{status}</p>}
         </div>
 
         <Section title="Scenario">
-          <label className="mt-2 flex items-center gap-2 text-[11px] text-slate-400">
+          <label className="mt-2 flex items-center gap-2 text-[12px] text-ink-dim">
             Interviewing for
             <select
               value={level}
               onChange={(e) => setLevel(e.target.value as Level)}
-              className="flex-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-100"
+              className="flex-1 rounded border border-line bg-page px-2 py-1 text-[13px] text-ink"
             >
               {LEVELS.map((l) => (
                 <option key={l.level} value={l.level}>
@@ -161,8 +172,8 @@ export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
           </label>
 
           {scenario && (
-            <div className="mt-3 space-y-3 text-[11px] leading-relaxed text-slate-400">
-              <p className="text-slate-300">{scenario.prompt}</p>
+            <div className="mt-3 space-y-3 text-[12px] leading-relaxed text-ink-dim">
+              <p className="text-ink">{scenario.prompt}</p>
               <Requirements title="Functional" items={scenario.functional} />
               <Requirements title="Non-functional" items={scenario.nonFunctional} />
             </div>
@@ -175,26 +186,28 @@ export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
               <button
                 key={kind}
                 onClick={() => addNode(kind)}
-                className="rounded border border-slate-700 px-2 py-1 text-left text-[11px] hover:bg-slate-800"
+                className="rounded border border-line bg-page px-2 py-1 text-left text-[12px] hover:border-ink-faint"
                 style={{ borderLeftColor: accent, borderLeftWidth: 3 }}
               >
                 {label}
               </button>
             ))}
           </div>
-          <p className="mt-2 text-[10px] text-slate-500">
-            Drag to arrange · drag handle to handle to connect · double-click to rename ·
-            Delete to remove
-          </p>
+          <ul className="mt-2 space-y-0.5 text-[11px] text-ink-dim">
+            <li>Drag a box to move it</li>
+            <li>Drag handle to handle to connect two boxes</li>
+            <li>Double-click a box or arrow to rename it</li>
+            <li>Select and press Delete to remove</li>
+          </ul>
         </Section>
 
         <Section title="Session">
           <div className="flex gap-1">
-            <button onClick={save} className="flex-1 rounded bg-slate-700 px-2 py-1 text-xs hover:bg-slate-600">
+            <button onClick={save} className="flex-1 rounded border border-line bg-page px-2 py-1.5 text-[12px] hover:border-ink-faint">
               {sessionId ? `Save #${sessionId}` : 'Save'}
             </button>
-            <button onClick={reset} className="rounded bg-slate-800 px-2 py-1 text-xs hover:bg-slate-700">
-              New
+            <button onClick={reset} className="rounded border border-line bg-page px-2 py-1.5 text-[12px] hover:border-ink-faint">
+              Start over
             </button>
           </div>
           {/* Only this problem's sessions. The list used to carry every scenario's, which
@@ -208,7 +221,7 @@ export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
               <li key={s.id}>
                 <button
                   onClick={() => open(s.id)}
-                  className="w-full rounded px-2 py-1 text-left text-[11px] text-slate-400 hover:bg-slate-800"
+                  className="w-full rounded px-2 py-1 text-left text-[12px] text-ink-dim hover:bg-line/50"
                 >
                   #{s.id} · {s.nodeCount} nodes · {s.updatedAt.slice(0, 10)}
                 </button>
@@ -218,7 +231,7 @@ export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
         </Section>
       </aside>
 
-      <main className="flex-1">
+      <main className="min-h-[24rem] flex-1">
         <Canvas
           nodes={nodes}
           edges={edges}
@@ -247,10 +260,8 @@ export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div className="border-b border-slate-800 px-4 py-3">
-      <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-        {title}
-      </h2>
+    <div className="border-b border-line px-4 py-3">
+      <h2 className="mb-2 text-[12px] font-medium text-ink-dim">{title}</h2>
       {children}
     </div>
   );
@@ -259,8 +270,8 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 function Requirements({ title, items }: { title: string; items: string[] }) {
   return (
     <div>
-      <p className="font-medium text-slate-300">{title}</p>
-      <ul className="mt-1 list-disc space-y-0.5 pl-4">
+      <p className="font-medium text-ink">{title}</p>
+      <ul className="mt-1 list-disc space-y-0.5 pl-4 marker:text-ink-faint">
         {items.map((i) => (
           <li key={i}>{i}</li>
         ))}

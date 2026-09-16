@@ -4,7 +4,6 @@ import {
   Background,
   Controls,
   Handle,
-  MiniMap,
   Position,
   ReactFlow,
   type Connection,
@@ -20,15 +19,17 @@ function ComponentNodeInner({ data, selected }: NodeProps<CanvasNode>) {
   const accent = accentFor(data.kind);
   return (
     <div
-      className="rounded-md border-2 bg-slate-900 px-3 py-2 text-xs text-slate-100 shadow-lg"
-      style={{ borderColor: accent, outline: selected ? `2px solid ${accent}` : undefined }}
+      className="rounded-md border border-line bg-white px-3 py-2 text-[12px] text-ink shadow-sm"
+      style={{
+        borderLeft: `3px solid ${accent}`,
+        outline: selected ? `2px solid ${accent}` : undefined,
+        outlineOffset: 1,
+      }}
     >
-      <Handle type="target" position={Position.Left} className="!bg-slate-400" />
+      <Handle type="target" position={Position.Left} className="!bg-ink-faint" />
       <div className="font-medium">{data.label}</div>
-      <div className="text-[10px] uppercase tracking-wide" style={{ color: accent }}>
-        {data.kind}
-      </div>
-      <Handle type="source" position={Position.Right} className="!bg-slate-400" />
+      <div className="font-mono text-[10px] text-ink-dim">{data.kind}</div>
+      <Handle type="source" position={Position.Right} className="!bg-ink-faint" />
     </div>
   );
 }
@@ -96,11 +97,10 @@ export function Canvas({
       deleteKeyCode={['Backspace', 'Delete']}
       fitView
       proOptions={{ hideAttribution: false }}
-      className="bg-slate-950"
+      className="bg-page"
     >
-      <Background color="#1e293b" gap={20} />
-      <Controls className="!bg-slate-800 !text-slate-100" />
-      <MiniMap pannable className="!bg-slate-900" nodeColor={(n) => accentFor((n.data as CanvasNode['data']).kind)} />
+      <Background color="#e5e7eb" gap={20} />
+      <Controls />
     </ReactFlow>
   );
 }
