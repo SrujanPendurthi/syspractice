@@ -41,9 +41,39 @@ export interface Scenario {
   prompt: string;
   functional: string[];
   nonFunctional: string[];
-  /** Present on the wire but deliberately never rendered — seeing it defeats the drill. */
-  rubric: string[];
+  // No `rubric` here on purpose: the backend marks it `#[serde(skip)]` so it never
+  // reaches the browser at all. Seeing it would defeat the drill.
 }
+
+/**
+ * Mirror of `Stage` in `backend/src/critic.rs`. The interview runs one stage at a time.
+ * Order here is the order they are walked in, and drives the progress indicator.
+ */
+export type Stage = 'requirements' | 'estimation' | 'highLevel' | 'deepDive' | 'bottlenecks';
+
+export const STAGES: { stage: Stage; label: string }[] = [
+  { stage: 'requirements', label: 'Requirements' },
+  { stage: 'estimation', label: 'Estimation' },
+  { stage: 'highLevel', label: 'High-level design' },
+  { stage: 'deepDive', label: 'Deep dive' },
+  { stage: 'bottlenecks', label: 'Bottlenecks' },
+];
+
+export const stageIndex = (stage: Stage): number =>
+  STAGES.findIndex((s) => s.stage === stage);
+
+/** The stage after `stage`, or null at the end of the interview. */
+export const nextStage = (stage: Stage): Stage | null =>
+  STAGES[stageIndex(stage) + 1]?.stage ?? null;
+
+/** Mirror of `Level` in `backend/src/scenarios.rs`. Selects how much rubric is in scope. */
+export type Level = 'junior' | 'senior' | 'staff';
+
+export const LEVELS: { level: Level; label: string }[] = [
+  { level: 'junior', label: 'Junior' },
+  { level: 'senior', label: 'Senior' },
+  { level: 'staff', label: 'Staff' },
+];
 
 export interface SessionSummary {
   id: number;

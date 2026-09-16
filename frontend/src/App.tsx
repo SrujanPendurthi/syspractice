@@ -6,14 +6,20 @@ import { CritiquePanel } from './CritiquePanel';
 import { listScenarios, listSessions, loadSession, saveSession, updateSession } from './api';
 import {
   fromTopology,
+  LEVELS,
   NODE_KINDS,
   toTopology,
   type CanvasEdge,
   type CanvasNode,
+  type Level,
   type NodeKind,
   type Scenario,
   type SessionSummary,
+  type Stage,
 } from './types';
+
+/** How long the canvas and notes must sit still before the critic starts on its own. */
+const IDLE_MS = 8000;
 
 let nodeSeq = 0;
 const nextId = () => `n${Date.now().toString(36)}${nodeSeq++}`;
@@ -24,6 +30,9 @@ export default function App() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [notes, setNotes] = useState('');
+  const [stage, setStage] = useState<Stage>('requirements');
+  const [difficulty, setDifficulty] = useState<Level>('senior');
 
   const [nodes, setNodes, onNodesChange] = useNodesState<CanvasNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<CanvasEdge>([]);
@@ -33,6 +42,30 @@ export default function App() {
   const graph = useRef({ nodes, edges });
   graph.current = { nodes, edges };
   const getTopology = useCallback(() => toTopology(graph.current.nodes, graph.current.edges), []);
+
+  // Same trick for the notes: the panel reads them at request time rather than taking
+  // them as a prop, so typing in the textarea does not re-render it mid-stream.
+  const notesRef = useRef(notes);
+  notesRef.current = notes;
+  const getNotes = useCallback(() => notesRef.current, []);
+
+  // Auto-run plumbing. The panel subscribes; App decides when things have gone quiet.
+  // A changing `revision` prop would defeat the memo and put the panel back in every
+  // drag frame, so the subscription itself has to be the referentially stable thing.
+  const idleListeners = useRef(new Set<() => void>());
+  const subscribeToIdle = useCallback((cb: () => void) => {
+    idleListeners.current.add(cb);
+    return () => {
+      idleListeners.current.delete(cb);
+    };
+  }, []);
+
+  // Restarting on every edit is what gives abort-on-change for free: the cleanup clears
+  // the pending timer, and the panel aborts its in-flight stream when it re-runs.
+  useEffect(() => {
+    const t = setTimeout(() => idleListeners.current.forEach((cb) => cb()), IDLE_MS);
+    return () => clearTimeout(t);
+  }, [nodes, edges, notes]);
 
   useEffect(() => {
     listScenarios()
@@ -60,8 +93,8 @@ export default function App() {
     try {
       const topology = getTopology();
       const { id } = sessionId
-        ? await updateSession(sessionId, topology)
-        : await saveSession(scenario.id, topology);
+        ? await updateSession(sessionId, topology, notes, stage)
+        : await saveSession(scenario.id, topology, notes, stage);
       setSessionId(id);
       setStatus(`Saved session #${id}`);
       setSessions(await listSessions());
@@ -75,6 +108,8 @@ export default function App() {
     const { nodes: n, edges: e } = fromTopology(s.topology);
     setNodes(n);
     setEdges(e);
+    setNotes(s.notes);
+    setStage(s.stage);
     setSessionId(s.id);
     setScenario(scenarios.find((x) => x.id === s.scenarioId) ?? null);
     setStatus(`Opened session #${s.id}`);
@@ -83,6 +118,8 @@ export default function App() {
   const reset = () => {
     setNodes([]);
     setEdges([]);
+    setNotes('');
+    setStage('requirements');
     setSessionId(null);
     setStatus(null);
   };
@@ -111,6 +148,21 @@ export default function App() {
             ))}
           </select>
 
+          <label className="mt-2 flex items-center gap-2 text-[11px] text-slate-400">
+            Interviewing for
+            <select
+              value={difficulty}
+              onChange={(e) => setDifficulty(e.target.value as Level)}
+              className="flex-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-100"
+            >
+              {LEVELS.map((l) => (
+                <option key={l.level} value={l.level}>
+                  {l.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
           {scenario && (
             <div className="mt-3 space-y-3 text-[11px] leading-relaxed text-slate-400">
               <p className="text-slate-300">{scenario.prompt}</p>
@@ -136,6 +188,20 @@ export default function App() {
           <p className="mt-2 text-[10px] text-slate-500">
             Drag to arrange · drag handle to handle to connect · double-click to rename ·
             Delete to remove
+          </p>
+        </Section>
+
+        <Section title="Notes">
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            rows={8}
+            placeholder={'Assumptions:\n- 100M writes/day\n- 500B/row\n\nStorage yr1:\n100M * 365 * 500B = ~18TB'}
+            className="w-full resize-y rounded border border-slate-700 bg-slate-800 px-2 py-1 font-mono text-[11px] leading-relaxed text-slate-200 placeholder:text-slate-600"
+          />
+          <p className="mt-1 text-[10px] text-slate-500">
+            Requirements and back-of-the-envelope maths. The first two stages are graded on
+            this, not on the diagram.
           </p>
         </Section>
 
@@ -174,7 +240,17 @@ export default function App() {
         />
       </main>
 
-      {scenario && <CritiquePanel scenarioId={scenario.id} getTopology={getTopology} />}
+      {scenario && (
+        <CritiquePanel
+          scenarioId={scenario.id}
+          stage={stage}
+          difficulty={difficulty}
+          onAdvance={setStage}
+          getTopology={getTopology}
+          getNotes={getNotes}
+          subscribeToIdle={subscribeToIdle}
+        />
+      )}
     </div>
   );
 }

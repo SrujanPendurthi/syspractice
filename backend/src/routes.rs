@@ -9,7 +9,9 @@ use serde::Deserialize;
 use serde_json::json;
 use sqlx::SqlitePool;
 
+use crate::critic::Stage;
 use crate::error::AppError;
+use crate::scenarios::Level;
 use crate::topology::Topology;
 use crate::{critic, db, scenarios};
 
@@ -42,13 +44,34 @@ async fn list_sessions(State(s): State<AppState>) -> Result<impl IntoResponse, A
 struct CreateSession {
     scenario_id: String,
     topology: Topology,
+    #[serde(default)]
+    notes: String,
+    #[serde(default = "first_stage")]
+    stage: Stage,
+}
+
+/// A session that arrives without a stage is one that has not started the interview.
+fn first_stage() -> Stage {
+    Stage::Requirements
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateSession {
+    topology: Topology,
+    #[serde(default)]
+    notes: String,
+    #[serde(default = "first_stage")]
+    stage: Stage,
 }
 
 async fn create_session(
     State(s): State<AppState>,
     Json(body): Json<CreateSession>,
 ) -> Result<impl IntoResponse, AppError> {
-    let id = db::create_session(&s.pool, &body.scenario_id, &body.topology).await?;
+    let id =
+        db::create_session(&s.pool, &body.scenario_id, &body.topology, &body.notes, body.stage)
+            .await?;
     Ok(Json(json!({ "id": id })))
 }
 
@@ -62,9 +85,9 @@ async fn get_session(
 async fn update_session(
     State(s): State<AppState>,
     Path(id): Path<i64>,
-    Json(topology): Json<Topology>,
+    Json(body): Json<UpdateSession>,
 ) -> Result<impl IntoResponse, AppError> {
-    db::update_session(&s.pool, id, &topology).await?;
+    db::update_session(&s.pool, id, &body.topology, &body.notes, body.stage).await?;
     Ok(Json(json!({ "id": id })))
 }
 
@@ -73,6 +96,16 @@ async fn update_session(
 struct CritiqueRequest {
     scenario_id: String,
     topology: Topology,
+    #[serde(default)]
+    notes: String,
+    #[serde(default = "first_stage")]
+    stage: Stage,
+    #[serde(default = "default_level")]
+    difficulty: Level,
+}
+
+fn default_level() -> Level {
+    Level::Senior
 }
 
 async fn critique(
@@ -80,8 +113,9 @@ async fn critique(
     Json(body): Json<CritiqueRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let scenario = scenarios::find(&body.scenario_id).ok_or(AppError::NotFound)?;
-    let prompt = critic::build_prompt(scenario, &body.topology);
-    let stream = critic::stream_critique(&s.runner_url, &s.model, prompt).await?;
+    let system = critic::system_prompt(body.difficulty, body.stage);
+    let prompt = critic::build_prompt(scenario, &body.topology, &body.notes, body.difficulty);
+    let stream = critic::stream_critique(&s.runner_url, &s.model, system, prompt).await?;
 
     // Keep-alive comments stop proxies from closing the connection while the model
     // is still loading the prompt and has emitted no tokens yet.

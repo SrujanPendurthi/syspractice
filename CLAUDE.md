@@ -27,6 +27,10 @@ React Flow state ──toTopology()──▶ Topology JSON ──▶ Rust struct
                                         └──▶ SQLite sessions.topology
 ```
 
+Three pairs are **hand-mirrored** across the language boundary: `Topology`/`NodeKind`
+(`topology.rs` ↔ `types.ts`), `Stage` (`critic.rs` ↔ `types.ts`), and `Level`
+(`scenarios.rs` ↔ `types.ts`).
+
 `backend/src/topology.rs` and `frontend/src/types.ts` are **hand-mirrored**. Renaming a field or adding a `NodeKind` means editing both in the same commit — plus `NODE_KINDS` in `types.ts` for the palette entry. `topology.rs`'s round-trip test asserts the camelCase wire format, so a Rust-side rename fails the build; a TS-side rename fails silently. If this drifts more than once, switch to `ts-rs` and derive.
 
 `Topology::describe()` is the only thing the model sees of the diagram — coordinates are deliberately dropped, and edges are rendered by node *label*, not id.
@@ -83,6 +87,10 @@ llama-server -m <model.gguf> --port 8080
 * **The critique endpoint is a POST**, so `EventSource` is unusable. `api.ts` reads the body and parses SSE frames by hand. Each frame's data is a **JSON-encoded string** so tokens containing newlines survive — don't "simplify" that to raw text.
 * **Reasoning models emit `delta.reasoning` with `delta.content` empty.** Measured on gemma4:12b: 686 reasoning frames to 456 content frames on one critique. Reading only `content` throws all of them away and the panel looks hung for the entire thinking phase. `parse_delta` returns `Delta::Reasoning`, the backend tags it as SSE event `thinking` (vs `token`), and the panel shows the tail as a liveness signal. Frames carrying both fields count as content.
 * **Ollama caps every model at a 4096-token context** regardless of what it was trained for (MiniCPM5-2B: 131k, gemma4:12b: 262k), and `/v1/chat/completions` ignores `options.num_ctx` — verified, the request changes nothing. Only `OLLAMA_CONTEXT_LENGTH` on the server does, so `./dev` exports it before `ollama serve` and warns when it reuses a daemon it did not start. It matters because overflow truncates from the front, dropping the system prompt, and the critique silently stops following the four-section format. `ollama ps` prints the real number.
+* **A model will rubber-stamp a stated number.** Told to "check their maths", both MiniCPM5-2B and gemma4:12b read `100M * 365 * 500B = 18GB` and replied that it checks out — it is 18.25 TB, a 1000x unit slip. Not a capacity problem; the 12B failed identically. `Stage::Estimation` now orders the model to recompute from the inputs *before* judging, and names the GB/TB and per-day/per-second slips as the ones to look for. Weaken that wording and the estimation stage silently goes back to agreeing with whatever it is shown.
+* **The interview is staged, one stage per critique.** `Stage::focus()` in `critic.rs` says what to grade *and* what to ignore; without the ignore half the model drifts back to reviewing the whole design every time. The ~150-word cap is load-bearing rather than cosmetic — critiques auto-run when the canvas goes quiet, and a four-section answer never finishes before the next edit aborts it. Measured on MiniCPM: 1m38s unstaged, 36-46s per stage.
+* **Difficulty filters the rubric in Rust, not in the prompt.** `Scenario::rubric_for(level)` drops out-of-scope lines before they are ever sent. A 2B will not reliably ignore a rubric line it can see. `rubric` is `#[serde(skip)]` so it never reaches the browser either.
+* **`subscribeToIdle` in `App.tsx` must stay referentially stable.** It is a callback over a ref'd listener set precisely so `CritiquePanel` (memoized) keeps its props unchanged during a drag. Passing a changing `revision` prop instead would undo the same optimization `getTopology` exists to protect. The debounce effect's cleanup is also what gives abort-on-edit for free.
 * **Vite proxies `/api`**, so the backend has no CORS layer. Serving the frontend from anywhere other than the dev server means adding one.
 * **sqlx runtime-checked queries** (`query_as`, not `query!`). No `DATABASE_URL` needed at build time, but typos are caught by tests, not the compiler.
 * **`nodeTypes` lives outside the component** in `Canvas.tsx`. Moving it inside remounts every node on every drag frame.

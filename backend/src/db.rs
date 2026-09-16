@@ -8,6 +8,7 @@ use serde::Serialize;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{FromRow, SqlitePool};
 
+use crate::critic::Stage;
 use crate::error::AppError;
 use crate::topology::Topology;
 
@@ -16,6 +17,8 @@ struct SessionRow {
     id: i64,
     scenario_id: String,
     topology: String,
+    notes: String,
+    stage: String,
     created_at: String,
     updated_at: String,
 }
@@ -26,6 +29,8 @@ pub struct Session {
     pub id: i64,
     pub scenario_id: String,
     pub topology: Topology,
+    pub notes: String,
+    pub stage: Stage,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -38,6 +43,10 @@ impl TryFrom<SessionRow> for Session {
             id: r.id,
             scenario_id: r.scenario_id,
             topology: serde_json::from_str(&r.topology)?,
+            notes: r.notes,
+            // The column holds the serde tag, so it round-trips through the same JSON
+            // string the wire format uses.
+            stage: serde_json::from_str(&format!("\"{}\"", r.stage))?,
             created_at: r.created_at,
             updated_at: r.updated_at,
         })
@@ -70,17 +79,33 @@ pub async fn connect(path: &str) -> anyhow::Result<SqlitePool> {
     Ok(pool)
 }
 
+/// The serde tag for a stage, for storing in the `stage` column. Trimming the quotes off
+/// the JSON keeps one source of truth for the spelling rather than a second match arm that
+/// can drift from the `Serialize` derive.
+fn stage_tag(stage: Stage) -> String {
+    serde_json::to_string(&stage)
+        .expect("Stage always serializes")
+        .trim_matches('"')
+        .to_string()
+}
+
 pub async fn create_session(
     pool: &SqlitePool,
     scenario_id: &str,
     topology: &Topology,
+    notes: &str,
+    stage: Stage,
 ) -> Result<i64, AppError> {
     let json = serde_json::to_string(topology).expect("Topology always serializes");
-    let row: (i64,) = sqlx::query_as("INSERT INTO sessions (scenario_id, topology) VALUES (?, ?) RETURNING id")
-        .bind(scenario_id)
-        .bind(json)
-        .fetch_one(pool)
-        .await?;
+    let row: (i64,) = sqlx::query_as(
+        "INSERT INTO sessions (scenario_id, topology, notes, stage) VALUES (?, ?, ?, ?) RETURNING id",
+    )
+    .bind(scenario_id)
+    .bind(json)
+    .bind(notes)
+    .bind(stage_tag(stage))
+    .fetch_one(pool)
+    .await?;
     Ok(row.0)
 }
 
@@ -88,13 +113,20 @@ pub async fn update_session(
     pool: &SqlitePool,
     id: i64,
     topology: &Topology,
+    notes: &str,
+    stage: Stage,
 ) -> Result<(), AppError> {
     let json = serde_json::to_string(topology).expect("Topology always serializes");
-    let res = sqlx::query("UPDATE sessions SET topology = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(json)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    let res = sqlx::query(
+        "UPDATE sessions SET topology = ?, notes = ?, stage = ?, updated_at = datetime('now')
+         WHERE id = ?",
+    )
+    .bind(json)
+    .bind(notes)
+    .bind(stage_tag(stage))
+    .bind(id)
+    .execute(pool)
+    .await?;
 
     if res.rows_affected() == 0 {
         return Err(AppError::NotFound);
@@ -128,6 +160,12 @@ mod tests {
     use super::*;
     use crate::topology::{Node, NodeKind};
 
+    #[test]
+    fn stage_tags_match_the_wire_format() {
+        assert_eq!(stage_tag(Stage::HighLevel), "highLevel");
+        assert_eq!(stage_tag(Stage::Requirements), "requirements");
+    }
+
     fn topo(n: usize) -> Topology {
         Topology {
             nodes: (0..n)
@@ -147,13 +185,20 @@ mod tests {
     async fn saves_loads_and_lists() {
         let pool = connect(":memory:").await.unwrap();
 
-        let id = create_session(&pool, "url-shortener", &topo(2)).await.unwrap();
+        let id = create_session(&pool, "url-shortener", &topo(2), "10k QPS", Stage::Requirements)
+            .await
+            .unwrap();
         let got = get_session(&pool, id).await.unwrap();
         assert_eq!(got.topology.nodes.len(), 2);
         assert_eq!(got.scenario_id, "url-shortener");
+        assert_eq!(got.notes, "10k QPS");
+        assert_eq!(got.stage, Stage::Requirements);
 
-        update_session(&pool, id, &topo(5)).await.unwrap();
-        assert_eq!(get_session(&pool, id).await.unwrap().topology.nodes.len(), 5);
+        update_session(&pool, id, &topo(5), "18TB year one", Stage::DeepDive).await.unwrap();
+        let got = get_session(&pool, id).await.unwrap();
+        assert_eq!(got.topology.nodes.len(), 5);
+        assert_eq!(got.notes, "18TB year one", "notes must survive an update");
+        assert_eq!(got.stage, Stage::DeepDive, "the interview must resume where it left off");
 
         let list = list_sessions(&pool).await.unwrap();
         assert_eq!(list.len(), 1);
@@ -164,6 +209,7 @@ mod tests {
     async fn missing_rows_are_not_found() {
         let pool = connect(":memory:").await.unwrap();
         assert!(matches!(get_session(&pool, 999).await, Err(AppError::NotFound)));
-        assert!(matches!(update_session(&pool, 999, &topo(1)).await, Err(AppError::NotFound)));
+        let missing = update_session(&pool, 999, &topo(1), "", Stage::Requirements).await;
+        assert!(matches!(missing, Err(AppError::NotFound)));
     }
 }
