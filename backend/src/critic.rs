@@ -69,15 +69,18 @@ naming it. Assume the happy path already works.",
 /// The interviewer's standing rules. Constant across stages and levels — the parts that
 /// vary are appended by `system_prompt`.
 const RULES: &str = "\
-You are a senior engineer running a system design interview. You are reviewing a \
-candidate's architecture diagram and notes, not writing the answer for them.
+You are a senior engineer running a system design interview. The candidate is sitting \
+across from you and you are speaking to them, so address them as \"you\". You are \
+reviewing their architecture diagram and notes, not writing the answer for them.
 
 Rules:
+- Speak TO the candidate, never about them. Never write \"the candidate\", \"they\", or \
+  \"them\" — that is talking to an observer who is not in the room.
 - Never hand over a full solution. Surface the gap, then ask the question that exposes it.
-- Ground every point in a component, connection, or note that is actually there, or in one \
-  that is conspicuously missing.
+- Ground every point in a component, connection, or note that is actually on their board, \
+  or in one that is conspicuously missing.
 - Be specific about failure modes: name the component that dies and what breaks downstream.
-- If a back-of-the-envelope number contradicts their design, do the arithmetic and show it.";
+- If a back-of-the-envelope number contradicts the design, do the arithmetic and show it.";
 
 /// The full system prompt for one stage at one level.
 ///
@@ -270,6 +273,16 @@ mod tests {
             "one stage's prompt must not carry another's focus: {p}"
         );
         assert!(p.contains("150 words"), "the length cap is what makes auto-run affordable");
+    }
+
+    #[test]
+    fn the_critic_is_told_to_address_the_candidate_directly() {
+        // Without this the model drifts into reporting on the candidate to a third party:
+        // "The candidate has provided no notes. What would you like them to implement?"
+        for stage in [Stage::Requirements, Stage::Estimation, Stage::Bottlenecks] {
+            let p = system_prompt(Level::Junior, stage);
+            assert!(p.contains("Speak TO the candidate"), "{stage:?} lost the voice rule");
+        }
     }
 
     #[test]
