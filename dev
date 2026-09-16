@@ -45,21 +45,42 @@ if [[ -n "${LLAMA_MODEL:-}" ]]; then
 elif command -v ollama >/dev/null 2>&1; then
   export LLAMA_SERVER_URL="http://127.0.0.1:11434"
 
+  # Ollama defaults every model to a 4096-token context no matter what it was trained for,
+  # and silently truncates the oldest tokens — which in a one-shot chat is the system prompt,
+  # so an overflowing critique quietly stops following the four-section format. A reasoning
+  # model spends most of its budget thinking: MiniCPM5-2B emitted ~2.3k tokens of reasoning
+  # and content on a 5-node diagram. The OpenAI-compatible endpoint ignores options.num_ctx,
+  # so this env var on the server is the only lever.
+  export OLLAMA_CONTEXT_LENGTH="${OLLAMA_CONTEXT_LENGTH:-16384}"
+
   # Reuse an already-running daemon rather than starting a second one; only tear down
   # an instance this script owns.
   if ! curl -sf -m 2 "${LLAMA_SERVER_URL}/api/tags" >/dev/null 2>&1; then
-    echo "==> starting ollama"
+    echo "==> starting ollama (context ${OLLAMA_CONTEXT_LENGTH})"
     ollama serve </dev/null >/dev/null 2>&1 &
     pids+=($!)
     for _ in $(seq 1 30); do
       curl -sf -m 1 "${LLAMA_SERVER_URL}/api/tags" >/dev/null 2>&1 && break
       sleep 1
     done
+  else
+    # A daemon we did not start keeps its own context setting; ours never reached it.
+    echo "!!  reusing a running ollama — OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH} not applied." >&2
+    echo "    'ollama ps' shows the real context; restart the daemon to change it." >&2
   fi
 
   # Ollama resolves the model name, so a wrong one is a 404 at critique time.
+  # `ollama list` is ordered by recency, so the first row is whatever was pulled last.
+  # Pick deliberately instead. Measured on the url-shortener scenario: MiniCPM5-2B took
+  # 1m38s and gemma4:12b 4m48s for a critique of comparable quality — the 2B misses the
+  # back-of-the-envelope arithmetic, the 12b misses TTL/expiry. Fast default wins for a
+  # draw-and-iterate loop; SYSPRACTICE_MODEL=gemma4:12b ./dev for a slower, sharper pass.
   if [[ -z "${SYSPRACTICE_MODEL:-}" ]]; then
-    SYSPRACTICE_MODEL="$(ollama list 2>/dev/null | awk 'NR==2 {print $1}')"
+    installed="$(ollama list 2>/dev/null | awk 'NR>1 {print $1}')"
+    for want in hf.co/openbmb/MiniCPM5-2B-GGUF:Q4_K_M qwen3:8b gemma4:12b; do
+      grep -qx "$want" <<<"$installed" && { SYSPRACTICE_MODEL="$want"; break; }
+    done
+    SYSPRACTICE_MODEL="${SYSPRACTICE_MODEL:-$(head -1 <<<"$installed")}"
     export SYSPRACTICE_MODEL
   fi
 
