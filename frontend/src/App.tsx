@@ -18,11 +18,7 @@ function Routes() {
   }
 
   return scenarioId ? (
-    <Workspace
-      scenarioId={scenarioId}
-      onBack={() => navigate('/')}
-      onSignIn={() => navigate('/login')}
-    />
+    <Workspace scenarioId={scenarioId} onBack={() => navigate('/')} />
   ) : (
     <ProblemList
       onOpen={(id) => navigate(`/s/${encodeURIComponent(id)}`)}

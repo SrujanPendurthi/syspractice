@@ -8,8 +8,11 @@
 //! deliberately slow and would otherwise stall the async runtime under any concurrency.
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+use axum::http::HeaderMap;
 
 use argon2::password_hash::rand_core::OsRng as SaltRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
@@ -192,31 +195,47 @@ impl FromRequestParts<AppState> for MaybeUser {
     }
 }
 
-// --- login throttle ----------------------------------------------------------
+// --- throttling ---------------------------------------------------------------
 
-const MAX_FAILURES: u32 = 5;
-const WINDOW: Duration = Duration::from_secs(15 * 60);
+pub const LOGIN_MAX: u32 = 5;
+pub const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
 
-/// Failed-login counter, keyed by folded email.
+/// Registration is rate-limited by address rather than by email, because the thing being
+/// abused is the ability to ask "does this account exist?" over and over. Five an hour is
+/// far more than a real person needs and far less than an enumeration sweep wants.
+pub const REGISTER_MAX: u32 = 5;
+pub const REGISTER_WINDOW: Duration = Duration::from_secs(60 * 60);
+
+/// Above this many tracked keys, expired entries are swept on the next write. Without it
+/// a spray across distinct keys grows the map forever.
+const SWEEP_AT: usize = 4096;
+
+/// A fixed-window counter keyed by whatever the caller considers an identity.
 ///
 /// ponytail: in-process, so it resets on deploy and does not survive a second server.
 /// Move it into a table when there is a second server — not before.
-#[derive(Default)]
-pub struct LoginThrottle {
+pub struct Throttle {
     inner: Mutex<HashMap<String, (u32, Instant)>>,
+    max: u32,
+    window: Duration,
+    message: &'static str,
 }
 
-impl LoginThrottle {
-    /// Errors once an account has been guessed at too often. Called before the password
-    /// is checked, so a throttled attempt costs no argon2 time either.
+impl Throttle {
+    pub fn new(max: u32, window: Duration, message: &'static str) -> Self {
+        Self { inner: Mutex::new(HashMap::new()), max, window, message }
+    }
+
+    /// Errors once a key has been used too often. Called before any expensive work, so a
+    /// throttled request costs no argon2 time either.
     pub fn check(&self, key: &str) -> Result<(), AppError> {
         let mut map = self.lock();
         match map.get(key) {
-            Some((n, since)) if *n >= MAX_FAILURES && since.elapsed() < WINDOW => {
-                Err(AppError::Invalid("too many sign-in attempts — try again in 15 minutes"))
+            Some((n, since)) if *n >= self.max && since.elapsed() < self.window => {
+                Err(AppError::Throttled(self.message))
             }
             // The window has rolled over; forget the old count rather than let it linger.
-            Some((_, since)) if since.elapsed() >= WINDOW => {
+            Some((_, since)) if since.elapsed() >= self.window => {
                 map.remove(key);
                 Ok(())
             }
@@ -224,10 +243,14 @@ impl LoginThrottle {
         }
     }
 
-    pub fn record_failure(&self, key: &str) {
+    pub fn record(&self, key: &str) {
         let mut map = self.lock();
+        if map.len() > SWEEP_AT {
+            let window = self.window;
+            map.retain(|_, (_, since)| since.elapsed() < window);
+        }
         let entry = map.entry(key.to_string()).or_insert((0, Instant::now()));
-        if entry.1.elapsed() >= WINDOW {
+        if entry.1.elapsed() >= self.window {
             *entry = (0, Instant::now());
         }
         entry.0 += 1;
@@ -242,6 +265,27 @@ impl LoginThrottle {
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, (u32, Instant)>> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+/// The address to throttle a request against.
+///
+/// Behind a reverse proxy every connection arrives from the proxy, so the socket address
+/// would throttle the whole internet as one client. `X-Forwarded-For` fixes that, but it
+/// is caller-supplied and trivially forged when nothing strips it — so it is only honoured
+/// when `SYSPRACTICE_TRUST_PROXY` says a proxy is actually in front.
+pub fn client_key(headers: &HeaderMap, peer: SocketAddr, trust_proxy: bool) -> String {
+    if trust_proxy {
+        if let Some(first) = headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            return first.to_string();
+        }
+    }
+    peer.ip().to_string()
 }
 
 #[cfg(test)]
@@ -282,6 +326,19 @@ mod tests {
     }
 
     #[test]
+    fn a_forwarded_address_is_only_believed_behind_a_proxy() {
+        let peer: SocketAddr = "10.0.0.9:5000".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "203.0.113.7, 10.0.0.1".parse().unwrap());
+
+        // Forged by anyone who can reach the socket, so it must be ignored by default —
+        // otherwise a single client varies one header and defeats the rate limit entirely.
+        assert_eq!(client_key(&headers, peer, false), "10.0.0.9");
+        assert_eq!(client_key(&headers, peer, true), "203.0.113.7");
+        assert_eq!(client_key(&HeaderMap::new(), peer, true), "10.0.0.9");
+    }
+
+    #[test]
     fn passwords_and_emails_are_checked_before_anything_expensive() {
         assert!(check_password_rules("short").is_err());
         assert!(check_password_rules("long enough to pass").is_ok());
@@ -295,10 +352,10 @@ mod tests {
 
     #[test]
     fn the_throttle_stops_an_account_being_guessed_at() {
-        let t = LoginThrottle::default();
-        for _ in 0..MAX_FAILURES {
+        let t = Throttle::new(LOGIN_MAX, LOGIN_WINDOW, "too many attempts");
+        for _ in 0..LOGIN_MAX {
             assert!(t.check("a@example.com").is_ok());
-            t.record_failure("a@example.com");
+            t.record("a@example.com");
         }
         assert!(t.check("a@example.com").is_err(), "the sixth attempt should be refused");
         assert!(t.check("b@example.com").is_ok(), "one account must not throttle another");

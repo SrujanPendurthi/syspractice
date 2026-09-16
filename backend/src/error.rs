@@ -31,6 +31,10 @@ pub enum AppError {
     #[error("{0}")]
     Invalid(&'static str),
 
+    /// Rate limiting. 429 rather than 400 — this is "not yet", not "malformed".
+    #[error("{0}")]
+    Throttled(&'static str),
+
     /// Inference is a metered cost now, so this is a normal outcome rather than a fault.
     #[error("you have used your {0} critiques for this hour — the limit resets hourly")]
     QuotaExceeded(i64),
@@ -43,7 +47,7 @@ impl IntoResponse for AppError {
             AppError::Unauthorized => StatusCode::UNAUTHORIZED,
             AppError::BadCredentials => StatusCode::UNAUTHORIZED,
             AppError::EmailTaken | AppError::Invalid(_) => StatusCode::BAD_REQUEST,
-            AppError::QuotaExceeded(_) => StatusCode::TOO_MANY_REQUESTS,
+            AppError::QuotaExceeded(_) | AppError::Throttled(_) => StatusCode::TOO_MANY_REQUESTS,
             AppError::Runner(_) => StatusCode::BAD_GATEWAY,
             AppError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };

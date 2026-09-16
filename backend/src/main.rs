@@ -6,6 +6,7 @@ mod routes;
 mod scenarios;
 mod topology;
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use tower_http::services::{ServeDir, ServeFile};
@@ -29,6 +30,10 @@ async fn main() -> anyhow::Result<()> {
     // from http://localhost, which would leave every dev sign-in silently failing.
     let secure_cookies = env_or("SYSPRACTICE_SECURE_COOKIES", "1") != "0";
 
+    // Off by default: `X-Forwarded-For` is caller-supplied, so believing it without a
+    // proxy in front lets one client vary a header and evade every rate limit.
+    let trust_proxy = env_or("SYSPRACTICE_TRUST_PROXY", "0") == "1";
+
     let critique_quota =
         env_or("SYSPRACTICE_CRITIQUE_QUOTA", &DEFAULT_QUOTA.to_string()).parse().unwrap_or(DEFAULT_QUOTA);
 
@@ -37,7 +42,17 @@ async fn main() -> anyhow::Result<()> {
         pool,
         runner_url: runner_url.clone(),
         model: model.clone(),
-        throttle: Arc::new(auth::LoginThrottle::default()),
+        login_throttle: Arc::new(auth::Throttle::new(
+            auth::LOGIN_MAX,
+            auth::LOGIN_WINDOW,
+            "too many sign-in attempts — try again in 15 minutes",
+        )),
+        register_throttle: Arc::new(auth::Throttle::new(
+            auth::REGISTER_MAX,
+            auth::REGISTER_WINDOW,
+            "too many accounts created from here — try again later",
+        )),
+        trust_proxy,
         secure_cookies,
         critique_quota,
     });
@@ -63,7 +78,9 @@ async fn main() -> anyhow::Result<()> {
         println!("  !!     cookies are not marked Secure (SYSPRACTICE_SECURE_COOKIES=0)");
     }
 
-    axum::serve(listener, app).await?;
+    // `into_make_service_with_connect_info` is what makes the peer address available to
+    // the registration rate limit; a plain `app` would panic in that extractor.
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
 }
 

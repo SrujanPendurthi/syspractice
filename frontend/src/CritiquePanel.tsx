@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { QuotaExceeded, streamCritique, Unauthorized } from './api';
 import { nextStage, stageIndex, STAGES, type Level, type Stage, type Topology } from './types';
+import { useAuth } from './useAuth';
 
 interface CritiquePanelProps {
   scenarioId: string;
@@ -34,6 +35,7 @@ function CritiquePanelInner({
   signedIn,
   onSignIn,
 }: CritiquePanelProps) {
+  const { clear } = useAuth();
   const [text, setText] = useState('');
   const [running, setRunning] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -92,13 +94,17 @@ function CritiquePanelInner({
         // reader can do about them, so they get their own line rather than a red box.
         setError(null);
         setLimit(e.message);
+        // A 401 here means the cookie expired under us. Without dropping the local user,
+        // `signedIn` stays true, the sign-in link below stays hidden, and auto-review
+        // keeps firing a doomed request every twenty seconds with no way out.
+        if (e instanceof Unauthorized) clear();
       } else {
         setError(e instanceof Error ? e.message : String(e));
       }
     } finally {
       if (!controller.signal.aborted) setRunning(false);
     }
-  }, [scenarioId, stage, level, getTopology, notes, signedIn]);
+  }, [scenarioId, stage, level, getTopology, notes, signedIn, clear]);
 
   // Stopping by hand has to clear `running` itself. The `finally` in `run` deliberately
   // does not: on the auto-restart path the replacement run has already set it back to
@@ -137,6 +143,9 @@ function CritiquePanelInner({
           value={notes}
           onChange={(e) => onNotesChange(e.target.value)}
           rows={7}
+          // Matches MAX_NOTES in routes.rs. The server rejects beyond this; stopping the
+          // keystroke is friendlier than rejecting the save that follows it.
+          maxLength={8000}
           className="w-full resize-y rounded border border-line bg-page px-2 py-1.5 font-mono text-[12px] leading-relaxed text-ink"
         />
         <p className="mt-1.5 text-[11px] leading-relaxed text-ink-dim">

@@ -3,9 +3,11 @@
 //! Ownership is not enforced here. Every user-owned query in `db.rs` filters on `user_id`
 //! in its own SQL, so a handler cannot forget the check by forgetting a line.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{ConnectInfo, Path, State};
+use axum::http::HeaderMap;
 use axum::response::sse::{KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -15,7 +17,7 @@ use serde::Deserialize;
 use serde_json::json;
 use sqlx::SqlitePool;
 
-use crate::auth::{self, AuthUser, LoginThrottle, MaybeUser};
+use crate::auth::{self, AuthUser, MaybeUser, Throttle};
 use crate::critic::Stage;
 use crate::error::AppError;
 use crate::scenarios::Level;
@@ -27,8 +29,14 @@ pub struct AppState {
     pub pool: SqlitePool,
     pub runner_url: String,
     pub model: String,
-    /// Failed sign-ins, in memory. See `LoginThrottle`.
-    pub throttle: Arc<LoginThrottle>,
+    /// Failed sign-ins, keyed by folded email.
+    pub login_throttle: Arc<Throttle>,
+    /// Registrations, keyed by client address. Registration has to tell you an email is
+    /// taken to be usable at all, which makes it an account-existence oracle; rate
+    /// limiting is the mitigation available without sending confirmation email.
+    pub register_throttle: Arc<Throttle>,
+    /// Whether `X-Forwarded-For` is trustworthy here. See `auth::client_key`.
+    pub trust_proxy: bool,
     /// Off for local development over plain http, on everywhere else.
     pub secure_cookies: bool,
     /// Critiques allowed per user per hour. Inference is billed by the second now, and
@@ -90,6 +98,23 @@ fn first_stage() -> Stage {
     Stage::Requirements
 }
 
+/// Roughly two thousand tokens of prose, which is far more than requirements and
+/// back-of-the-envelope maths need.
+///
+/// This is a billing control as much as a storage one: `notes` is pasted verbatim into
+/// the critique prompt, so without a ceiling one request can spend megabytes of inference
+/// against a quota that counts requests. It is also what keeps the prompt inside the
+/// model's context — overflow truncates from the front and silently drops the system
+/// prompt, which is the failure CLAUDE.md describes.
+const MAX_NOTES: usize = 8_000;
+
+fn check_notes(notes: &str) -> Result<(), AppError> {
+    if notes.len() > MAX_NOTES {
+        return Err(AppError::Invalid("those notes are too long — keep them under 8,000 characters"));
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UpdateAttempt {
@@ -105,6 +130,11 @@ async fn create_attempt(
     AuthUser(user): AuthUser,
     Json(body): Json<CreateAttempt>,
 ) -> Result<impl IntoResponse, AppError> {
+    check_notes(&body.notes)?;
+    // Without this a client can write attempts against scenario ids that do not exist,
+    // which show up in its own progress as solved problems that are not problems.
+    scenarios::find(&body.scenario_id).ok_or(AppError::NotFound)?;
+
     let id = db::create_attempt(
         &s.pool,
         user.id,
@@ -131,6 +161,7 @@ async fn update_attempt(
     Path(id): Path<i64>,
     Json(body): Json<UpdateAttempt>,
 ) -> Result<impl IntoResponse, AppError> {
+    check_notes(&body.notes)?;
     db::update_attempt(&s.pool, user.id, id, &body.topology, &body.notes, body.stage).await?;
     Ok(Json(json!({ "id": id })))
 }
@@ -158,6 +189,7 @@ async fn critique(
     Json(body): Json<CritiqueRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let scenario = scenarios::find(&body.scenario_id).ok_or(AppError::NotFound)?;
+    check_notes(&body.notes)?;
 
     if db::critiques_in_last_hour(&s.pool, user.id).await? >= s.critique_quota {
         return Err(AppError::QuotaExceeded(s.critique_quota));
@@ -195,9 +227,17 @@ struct Login {
 
 async fn register(
     State(s): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     jar: CookieJar,
     Json(body): Json<Register>,
 ) -> Result<impl IntoResponse, AppError> {
+    // Counted before the work, and counted on success too: the limit is on how many times
+    // one address may ask whether an email is taken, not on how many times it may fail.
+    let who = auth::client_key(&headers, peer, s.trust_proxy);
+    s.register_throttle.check(&who)?;
+    s.register_throttle.record(&who);
+
     auth::check_email(&body.email)?;
     auth::check_password_rules(&body.password)?;
 
@@ -219,7 +259,7 @@ async fn login(
     Json(body): Json<Login>,
 ) -> Result<impl IntoResponse, AppError> {
     let key = db::fold_email(&body.email);
-    s.throttle.check(&key)?;
+    s.login_throttle.check(&key)?;
 
     let found = db::find_user_for_login(&s.pool, &body.email).await?;
 
@@ -227,16 +267,16 @@ async fn login(
     // distinguishable by how long they take.
     let Some((user, hash)) = found else {
         auth::dummy_verify(body.password).await;
-        s.throttle.record_failure(&key);
+        s.login_throttle.record(&key);
         return Err(AppError::BadCredentials);
     };
 
     if !auth::verify_password(body.password, hash).await? {
-        s.throttle.record_failure(&key);
+        s.login_throttle.record(&key);
         return Err(AppError::BadCredentials);
     }
 
-    s.throttle.clear(&key);
+    s.login_throttle.clear(&key);
     let token = auth::issue_session(&s, user.id).await?;
     Ok((auth::set_cookie(jar, token, s.secure_cookies), Json(user)))
 }

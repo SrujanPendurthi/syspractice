@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useEdgesState, useNodesState } from '@xyflow/react';
 
+import { AuthPage } from './AuthPage';
 import { Canvas } from './Canvas';
 import { CritiquePanel } from './CritiquePanel';
 import { listAttempts, listScenarios, loadAttempt, saveAttempt, updateAttempt, Unauthorized } from './api';
@@ -40,11 +41,16 @@ const nextId = () => `n${Date.now().toString(36)}${nodeSeq++}`;
 interface WorkspaceProps {
   scenarioId: string;
   onBack: () => void;
-  onSignIn: () => void;
 }
 
-export function Workspace({ scenarioId, onBack, onSignIn }: WorkspaceProps) {
+export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
   const { user, clear } = useAuth();
+  // Signing in happens over the workspace rather than by routing to /login. Navigating
+  // would unmount this component, and with it the diagram, the notes and the stage — so
+  // the one moment the app asks someone to sign in would be the moment it threw away
+  // what they had just drawn. The whole point of letting them draw signed out is lost.
+  const [signingIn, setSigningIn] = useState(false);
+  const onSignIn = useCallback(() => setSigningIn(true), []);
   const [scenario, setScenario] = useState<Scenario | null>(null);
   const [attempts, setAttempts] = useState<AttemptSummary[]>([]);
   const [attemptId, setAttemptId] = useState<number | null>(null);
@@ -109,7 +115,7 @@ export function Workspace({ scenarioId, onBack, onSignIn }: WorkspaceProps) {
       },
     ]);
 
-  const persist = async (at: Stage) => {
+  const persist = useCallback(async (at: Stage) => {
     if (!scenario || !user) return null;
     const topology = getTopology();
     const { id } = attemptId
@@ -118,7 +124,10 @@ export function Workspace({ scenarioId, onBack, onSignIn }: WorkspaceProps) {
     setAttemptId(id);
     setAttempts(await listAttempts());
     return id;
-  };
+    // `notes` is in here, so this identity changes while typing — which is fine, the
+    // panel re-renders for the notes anyway. What matters is that it stays put during a
+    // drag, when none of these change.
+  }, [scenario, user, attemptId, notes, getTopology]);
 
   const save = async () => {
     if (!user) {
@@ -137,23 +146,44 @@ export function Workspace({ scenarioId, onBack, onSignIn }: WorkspaceProps) {
   };
 
   const open = async (id: number) => {
-    const a = await loadAttempt(id);
-    const { nodes: n, edges: e } = fromTopology(a.topology);
-    setNodes(n);
-    setEdges(e);
-    setNotes(a.notes);
-    setStage(a.stage);
-    setAttemptId(a.id);
-    setStatus(`Opened attempt #${a.id}`);
+    try {
+      const a = await loadAttempt(id);
+      const { nodes: n, edges: e } = fromTopology(a.topology);
+      setNodes(n);
+      setEdges(e);
+      setNotes(a.notes);
+      setStage(a.stage);
+      setAttemptId(a.id);
+      setStatus(`Opened attempt #${a.id}`);
+    } catch (e) {
+      // Unhandled, this was a silent rejection: the click did nothing and said nothing.
+      if (e instanceof Unauthorized) clear();
+      setStatus(e instanceof Error ? e.message : String(e));
+    }
   };
 
   // Progress on the problem list is derived from saved attempts, so advancing has to
   // persist or the list stays empty for anyone who never presses Save. Signed out there
   // is nothing to persist to, and the stage still has to move.
-  const advance = (next: Stage) => {
-    setStage(next);
-    void persist(next).catch(() => undefined);
-  };
+  //
+  // `useCallback` is not a micro-optimisation here: `CritiquePanel` is memoized, and a
+  // fresh `onAdvance` on every render defeats the shallow compare just as thoroughly as
+  // an unstable `getTopology` would. It did, silently, until a test pass found it.
+  const advance = useCallback(
+    (next: Stage) => {
+      setStage(next);
+      persist(next).catch((e) => {
+        // Signed out there is genuinely nothing to save. An expired cookie looks the same
+        // from here but is not the same thing, and silently advancing while nothing
+        // records is how progress stops working without anyone noticing.
+        if (e instanceof Unauthorized) {
+          clear();
+          setStatus('Your session expired — sign in again to keep saving');
+        }
+      });
+    },
+    [persist, clear],
+  );
 
   const reset = () => {
     setNodes([]);
@@ -166,6 +196,13 @@ export function Workspace({ scenarioId, onBack, onSignIn }: WorkspaceProps) {
 
   return (
     <div className="flex h-screen w-screen flex-col bg-page text-ink lg:flex-row">
+      {/* Layered over the workspace, which stays mounted underneath with its diagram,
+          notes and stage intact. */}
+      {signingIn && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-page">
+          <AuthPage onDone={() => setSigningIn(false)} onBack={() => setSigningIn(false)} />
+        </div>
+      )}
       <aside className="flex w-full shrink-0 flex-col overflow-y-auto border-b border-line bg-surface lg:w-72 lg:border-r lg:border-b-0">
         <div className="border-b border-line px-4 py-3">
           <button onClick={onBack} className="text-[12px] text-ink-dim hover:text-ink">
