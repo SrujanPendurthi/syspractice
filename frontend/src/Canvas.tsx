@@ -3,6 +3,7 @@ import {
   addEdge,
   Background,
   Controls,
+  Panel,
   Handle,
   Position,
   ReactFlow,
@@ -19,7 +20,7 @@ function ComponentNodeInner({ data, selected }: NodeProps<CanvasNode>) {
   const accent = accentFor(data.kind);
   return (
     <div
-      className="rounded-md border border-line bg-white px-3 py-2 text-[12px] text-ink shadow-sm"
+      className="rounded-md border border-line bg-raised px-3 py-2 text-sm text-ink shadow-sm"
       style={{
         borderLeft: `3px solid ${accent}`,
         outline: selected ? `2px solid ${accent}` : undefined,
@@ -28,7 +29,7 @@ function ComponentNodeInner({ data, selected }: NodeProps<CanvasNode>) {
     >
       <Handle type="target" position={Position.Left} className="!bg-ink-faint" />
       <div className="font-medium">{data.label}</div>
-      <div className="font-mono text-[10px] text-ink-dim">{data.kind}</div>
+      <div className="font-mono text-xs text-ink-dim">{data.kind}</div>
       <Handle type="source" position={Position.Right} className="!bg-ink-faint" />
     </div>
   );
@@ -99,8 +100,19 @@ export function Canvas({
       proOptions={{ hideAttribution: false }}
       className="bg-page"
     >
-      <Background color="#e5e7eb" gap={20} />
+      <Background gap={20} />
       <Controls />
+      {/* An empty canvas is the first thing anyone sees on a problem, and it used to say
+          nothing at all — the only instructions were in the sidebar, which is not where
+          you are looking when you are staring at a blank grid. */}
+      {nodes.length === 0 && (
+        <Panel position="top-center" className="pointer-events-none mt-24 text-center">
+          <p className="text-base text-ink-dim">Nothing drawn yet.</p>
+          <p className="mt-1 text-sm text-ink-faint">
+            Add a component from the palette, then drag between handles to connect them.
+          </p>
+        </Panel>
+      )}
     </ReactFlow>
   );
 }

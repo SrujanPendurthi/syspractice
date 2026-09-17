@@ -20,13 +20,10 @@ const ORDER: Difficulty[] = ['easy', 'medium', 'hard'];
 interface ProblemListProps {
   onOpen: (scenarioId: string) => void;
   onSignIn: () => void;
-  onLearn: () => void;
-  onDiscuss: () => void;
-  onVersus: () => void;
 }
 
-export function ProblemList({ onOpen, onSignIn, onLearn, onDiscuss, onVersus }: ProblemListProps) {
-  const { user, signOut } = useAuth();
+export function ProblemList({ onOpen, onSignIn }: ProblemListProps) {
+  const { user } = useAuth();
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [progress, setProgress] = useState<ScenarioProgress[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -43,10 +40,7 @@ export function ProblemList({ onOpen, onSignIn, onLearn, onDiscuss, onVersus }: 
     listProgress().then(setProgress).catch(() => setProgress([]));
   }, [user]);
 
-  const byId = useMemo(
-    () => new Map(progress.map((p) => [p.scenarioId, p])),
-    [progress],
-  );
+  const byId = useMemo(() => new Map(progress.map((p) => [p.scenarioId, p])), [progress]);
 
   const tally = useMemo(
     () =>
@@ -67,140 +61,137 @@ export function ProblemList({ onOpen, onSignIn, onLearn, onDiscuss, onVersus }: 
   // order rather than anything a reader wants. Grouping by difficulty puts the ramp at
   // the top and keeps a newly added Easy problem from landing below the Hard ones.
   const rows = useMemo(
-    () =>
-      [...scenarios].sort(
-        (a, b) => ORDER.indexOf(a.difficulty) - ORDER.indexOf(b.difficulty),
-      ),
+    () => [...scenarios].sort((a, b) => ORDER.indexOf(a.difficulty) - ORDER.indexOf(b.difficulty)),
     [scenarios],
   );
 
   return (
-    <div className="min-h-full bg-page">
-      <header className="border-b border-line">
-        <div className="mx-auto flex max-w-5xl items-baseline gap-3 px-6 py-4">
-          <span className="font-mono text-[15px] font-medium tracking-tight text-ink">
-            syspractice
-          </span>
-          <span className="text-[13px] text-ink-dim">System design interview drills</span>
-          <button onClick={onLearn} className="text-[13px] text-ink-dim hover:text-ink">
-            Concepts
-          </button>
-          <button onClick={onDiscuss} className="text-[13px] text-ink-dim hover:text-ink">
-            Discussion
-          </button>
-          <button onClick={onVersus} className="text-[13px] text-ink-dim hover:text-ink">
-            1v1
-          </button>
+    <div className="mx-auto grid max-w-5xl grid-cols-1 gap-x-10 gap-y-6 px-6 py-8 lg:grid-cols-[1fr_15rem]">
+      <div className="lg:col-span-2">
+        <h1 className="text-xl font-semibold">Problems</h1>
+        <p className="mt-1 max-w-prose text-base text-ink-dim">
+          Draw the architecture, then work the five interview stages. The critic grades one
+          stage at a time against the rubric for the level you pick.
+        </p>
+      </div>
 
-          {user ? (
-            <span className="ml-auto flex items-baseline gap-3 text-[13px]">
-              <span className="text-ink-dim">{user.displayName}</span>
-              <button onClick={() => void signOut()} className="text-ink-dim hover:text-ink">
-                Sign out
-              </button>
-            </span>
-          ) : (
-            <button onClick={onSignIn} className="ml-auto text-[13px] text-easy-ink">
-              Sign in
-            </button>
-          )}
-        </div>
-      </header>
-
-      <main className="mx-auto grid max-w-5xl grid-cols-1 gap-10 px-6 py-8 lg:grid-cols-[1fr_15rem]">
-        <section>
-          {error && (
-            <p className="mb-4 rounded border border-hard/40 bg-hard/5 px-3 py-2 text-[13px] text-hard-ink">
-              Could not reach the backend: {error}. Start it with ./dev and reload.
-            </p>
-          )}
-
-          <table className="w-full border-collapse text-[14px]">
-            <thead>
-              <tr className="border-b border-line text-left text-[12px] text-ink-dim">
-                <th className="w-9 py-2 font-medium" scope="col">
-                  <span className="sr-only">Status</span>
-                </th>
-                <th className="py-2 font-medium" scope="col">Problem</th>
-                <th className="w-24 py-2 font-medium" scope="col">Difficulty</th>
-                <th className="w-20 py-2 text-right font-medium" scope="col">Attempts</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((s, i) => {
-                const p = byId.get(s.id);
-                return (
-                  <tr
-                    key={s.id}
-                    tabIndex={0}
-                    role="link"
-                    onClick={() => onOpen(s.id)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        onOpen(s.id);
-                      }
-                    }}
-                    className={`cursor-pointer border-b border-line/70 hover:bg-surface ${
-                      i % 2 === 1 ? 'bg-surface/50' : ''
-                    }`}
-                  >
-                    <td className="py-2.5 text-center">
-                      {p?.solved ? (
-                        <span className="text-easy-ink" title="All five stages walked">✓</span>
-                      ) : p ? (
-                        <span className="text-medium-ink" title="Started, not finished">◑</span>
-                      ) : (
-                        <span className="text-ink-faint/60">○</span>
-                      )}
-                    </td>
-                    <td className="py-2.5 text-ink">{s.title}</td>
-                    <td className={`py-2.5 text-[13px] capitalize ${DIFFICULTY_TEXT[s.difficulty]}`}>
-                      {s.difficulty}
-                    </td>
-                    <td className="py-2.5 text-right font-mono text-[13px] text-ink-dim">
-                      {p ? p.attempts : '–'}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </section>
-
-        <aside className="lg:pt-10">
-          <ProgressRing solved={solved} total={scenarios.length} tally={tally} />
-
-          <dl className="mt-6 space-y-2 text-[13px]">
-            {tally.map((t) => (
-              <div key={t.difficulty} className="flex items-baseline justify-between gap-3">
-                <dt className={`capitalize ${DIFFICULTY_TEXT[t.difficulty]}`}>{t.difficulty}</dt>
-                <dd className="font-mono text-ink-dim">
-                  {t.solved}<span className="text-ink-faint">/{t.total}</span>
-                </dd>
-              </div>
-            ))}
-          </dl>
-
-          <p className="mt-6 border-t border-line pt-4 text-[12px] leading-relaxed text-ink-dim">
-            {user ? (
-              <>
-                A problem counts as solved once you have worked all five interview stages.
-                It tracks that you went the distance, not that the design was good.
-              </>
-            ) : (
-              <>
-                <button onClick={onSignIn} className="text-easy-ink underline underline-offset-2">
-                  Sign in
-                </button>{' '}
-                to track which problems you have worked. Browsing and drawing do not need
-                an account.
-              </>
-            )}
+      <section>
+        {error && (
+          <p className="mb-4 rounded border border-hard/40 bg-hard/5 px-3 py-2 text-sm text-hard-ink">
+            Could not reach the backend: {error}. Start it with ./dev and reload.
           </p>
-        </aside>
-      </main>
+        )}
+
+        <table className="w-full border-collapse text-base">
+          <thead>
+            <tr className="border-b border-line text-left text-xs text-ink-dim">
+              <th className="w-9 py-2 font-medium" scope="col">
+                <span className="sr-only">Status</span>
+              </th>
+              <th className="py-2 font-medium" scope="col">Problem</th>
+              <th className="w-24 py-2 font-medium" scope="col">Difficulty</th>
+              <th className="w-20 py-2 text-right font-medium" scope="col">Attempts</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((s, i) => {
+              const p = byId.get(s.id);
+              return (
+                <tr
+                  key={s.id}
+                  tabIndex={0}
+                  role="link"
+                  onClick={() => onOpen(s.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onOpen(s.id);
+                    }
+                  }}
+                  /* The violet edge is the row saying it is clickable. Status keeps the
+                     assessment colours and never borrows the interaction one, so a
+                     highlighted row cannot be misread as a solved row. */
+                  className={`group cursor-pointer border-b border-line/70 hover:bg-surface ${
+                    i % 2 === 1 ? 'bg-surface/50' : ''
+                  }`}
+                >
+                  <td className="relative py-2.5 text-center">
+                    <span className="absolute inset-y-0 left-0 w-0.5 scale-y-0 bg-accent transition-transform group-hover:scale-y-100 group-focus:scale-y-100" />
+                    <Status progress={p} />
+                  </td>
+                  <td className="py-2.5 text-ink">{s.title}</td>
+                  <td className={`py-2.5 text-sm capitalize ${DIFFICULTY_TEXT[s.difficulty]}`}>
+                    {s.difficulty}
+                  </td>
+                  <td className="tnum py-2.5 text-right font-mono text-sm text-ink-dim">
+                    {p ? p.attempts : '–'}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </section>
+
+      <aside>
+        <ProgressRing solved={solved} total={scenarios.length} tally={tally} />
+
+        <dl className="mt-6 space-y-2 text-sm">
+          {tally.map((t) => (
+            <div key={t.difficulty} className="flex items-baseline justify-between gap-3">
+              <dt className={`capitalize ${DIFFICULTY_TEXT[t.difficulty]}`}>{t.difficulty}</dt>
+              <dd className="tnum font-mono text-ink-dim">
+                {t.solved}
+                <span className="text-ink-faint">/{t.total}</span>
+              </dd>
+            </div>
+          ))}
+        </dl>
+
+        <p className="mt-6 border-t border-line pt-4 text-xs leading-relaxed text-ink-dim">
+          {user ? (
+            <>
+              A problem counts as solved once you have worked all five interview stages. It
+              tracks that you went the distance, not that the design was good.
+            </>
+          ) : (
+            <>
+              <button onClick={onSignIn} className="text-accent underline underline-offset-2">
+                Sign in
+              </button>{' '}
+              to track which problems you have worked. Browsing and drawing do not need an
+              account.
+            </>
+          )}
+        </p>
+      </aside>
     </div>
+  );
+}
+
+/**
+ * Shape as well as colour. Someone who cannot separate the teal from the amber still gets
+ * a filled disc, a half disc and a ring — and the title attribute says it in words.
+ */
+function Status({ progress }: { progress?: ScenarioProgress }) {
+  if (progress?.solved) {
+    return (
+      <span className="text-easy-ink" title="Solved — all five stages walked">
+        ✓
+      </span>
+    );
+  }
+  if (progress) {
+    return (
+      <span className="text-medium-ink" title="Started, not finished">
+        ◑
+      </span>
+    );
+  }
+  return (
+    <span className="text-ink-faint/60" title="Not started">
+      ○
+    </span>
   );
 }
 
@@ -232,14 +223,23 @@ function ProgressRing({
 
   return (
     <figure className="relative mx-auto h-40 w-40">
-      <svg viewBox="0 0 128 128" className="h-full w-full -rotate-90" role="img"
-        aria-label={`${solved} of ${total} problems solved`}>
+      <svg
+        viewBox="0 0 128 128"
+        className="h-full w-full -rotate-90"
+        role="img"
+        aria-label={`${solved} of ${total} problems solved`}
+      >
         {arcs.map((a) => {
           const filled = a.total ? (a.solved / a.total) * a.span : 0;
           return (
             <g key={a.difficulty}>
               <circle
-                cx="64" cy="64" r={R} fill="none" strokeWidth="8" strokeLinecap="round"
+                cx="64"
+                cy="64"
+                r={R}
+                fill="none"
+                strokeWidth="8"
+                strokeLinecap="round"
                 stroke="var(--color-line)"
                 strokeDasharray={`${a.span} ${C - a.span}`}
                 strokeDashoffset={-a.start}
@@ -248,7 +248,12 @@ function ProgressRing({
                   difficulty has to be skipped rather than drawn empty. */}
               {filled > 0 && (
                 <circle
-                  cx="64" cy="64" r={R} fill="none" strokeWidth="8" strokeLinecap="round"
+                  cx="64"
+                  cy="64"
+                  r={R}
+                  fill="none"
+                  strokeWidth="8"
+                  strokeLinecap="round"
                   stroke={DIFFICULTY_RING[a.difficulty]}
                   strokeDasharray={`${filled} ${C - filled}`}
                   strokeDashoffset={-a.start}
@@ -260,8 +265,8 @@ function ProgressRing({
       </svg>
 
       <figcaption className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="font-mono text-[28px] leading-none text-ink">{solved}</span>
-        <span className="mt-1.5 text-[12px] text-ink-dim">of {total} solved</span>
+        <span className="tnum font-mono text-2xl leading-none text-ink">{solved}</span>
+        <span className="mt-1.5 text-xs text-ink-dim">of {total} solved</span>
       </figcaption>
     </figure>
   );

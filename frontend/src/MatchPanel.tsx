@@ -113,14 +113,14 @@ export const MatchPanel = memo(function MatchPanel({
   if (error && !match) {
     return (
       <Panel>
-        <p className="text-[13px] text-hard-ink">{error}</p>
+        <p className="text-sm text-hard-ink">{error}</p>
       </Panel>
     );
   }
   if (!match) {
     return (
       <Panel>
-        <p className="text-[13px] text-ink-dim">Loading match…</p>
+        <p className="text-sm text-ink-dim">Loading match…</p>
       </Panel>
     );
   }
@@ -135,12 +135,12 @@ export const MatchPanel = memo(function MatchPanel({
   return (
     <Panel>
       <div className="border-b border-line px-4 py-3">
-        <button onClick={onBack} className="text-[12px] text-ink-dim hover:text-ink">
+        <button onClick={onBack} className="text-sm text-ink-dim hover:text-ink">
           All matches
         </button>
-        <h2 className="mt-1 text-[14px] font-semibold">
+        <h2 className="mt-1 text-base font-semibold">
           vs {opponent}
-          <span className="ml-2 font-normal text-[12px] capitalize text-ink-dim">
+          <span className="ml-2 font-normal text-sm capitalize text-ink-dim">
             {match.level}
           </span>
         </h2>
@@ -149,26 +149,26 @@ export const MatchPanel = memo(function MatchPanel({
       {!match.verdict && !match.cancelled && (
         <div className="border-b border-line px-4 py-3">
           {match.startedAt === null ? (
-            <p className="text-[13px] text-ink-dim">
+            <p className="text-sm text-ink-dim">
               Waiting for someone to take this challenge. The clock does not start until
               they do — you can draw while you wait, and submit the moment it does.
             </p>
           ) : (
             <>
               <p
-                className={`font-mono text-[28px] leading-none ${
+                className={`font-mono text-2xl leading-none ${
                   msLeft <= 60000 ? 'text-hard-ink' : 'text-ink'
                 }`}
               >
                 {countdown(msLeft)}
               </p>
-              <p className="mt-1 text-[11px] text-ink-dim">
+              <p className="mt-1 text-xs text-ink-dim">
                 {msLeft <= 0 ? 'time is up' : `of ${match.minutes} minutes`}
               </p>
             </>
           )}
 
-          <dl className="mt-3 space-y-1 text-[12px]">
+          <dl className="mt-3 space-y-1 text-sm">
             <Row label="You" done={!!mine} />
             <Row label={opponent} done={!!theirs} />
           </dl>
@@ -178,22 +178,22 @@ export const MatchPanel = memo(function MatchPanel({
       <div className="flex-1 overflow-y-auto px-4 py-3">
         {match.verdict ? (
           <>
-            <p className={`text-[15px] font-semibold ${outcome.tone}`}>{outcome.text}</p>
+            <p className={`text-lg font-semibold ${outcome.tone}`}>{outcome.text}</p>
             {/* Plain text, like every other body of model output in this app. */}
-            <p className="mt-2 whitespace-pre-wrap text-[13px] leading-[1.7] text-ink">
+            <p className="mt-2 whitespace-pre-wrap text-sm leading-[1.7] text-ink">
               {match.verdict}
             </p>
           </>
         ) : match.cancelled ? (
-          <p className="text-[13px] text-ink-dim">This challenge was cancelled.</p>
+          <p className="text-sm text-ink-dim">This challenge was cancelled.</p>
         ) : mine ? (
-          <p className="text-[13px] text-ink-dim">
+          <p className="text-sm text-ink-dim">
             Your board is locked in. The verdict is written once you have both submitted or
             the clock runs out, whichever comes first.
           </p>
         ) : (
           <>
-            <label className="text-[12px] font-medium text-ink-dim" htmlFor="match-notes">
+            <label className="text-sm font-medium text-ink-dim" htmlFor="match-notes">
               Notes
             </label>
             <textarea
@@ -203,16 +203,16 @@ export const MatchPanel = memo(function MatchPanel({
               maxLength={8000}
               rows={8}
               placeholder="Requirements, the numbers, the trade-off you are making."
-              className="mt-1 w-full resize-y rounded border border-line bg-page p-2 text-[13px] leading-relaxed outline-none focus:border-ink-faint"
+              className="mt-1 w-full resize-y rounded border border-line bg-page p-2 text-sm leading-relaxed outline-none focus:border-ink-faint"
             />
-            <p className="mt-2 text-[11px] leading-relaxed text-ink-dim">
+            <p className="mt-2 text-xs leading-relaxed text-ink-dim">
               Both designs are graded against the same rubric at {match.level} level. The
               judge is not told who drew which.
             </p>
           </>
         )}
 
-        {error && <p className="mt-3 text-[13px] text-hard-ink">{error}</p>}
+        {error && <p className="mt-3 text-sm text-hard-ink">{error}</p>}
       </div>
 
       {!match.verdict && !match.cancelled && !mine && match.startedAt !== null && (
@@ -220,11 +220,11 @@ export const MatchPanel = memo(function MatchPanel({
           <button
             onClick={() => void submit()}
             disabled={busy || msLeft <= 0}
-            className="w-full rounded bg-ink px-3 py-2 text-[13px] text-page disabled:opacity-50"
+            className="w-full rounded bg-accent px-3 py-2 text-sm font-medium text-accent-ink disabled:opacity-50"
           >
             {busy ? 'Submitting…' : msLeft <= 0 ? 'Time is up' : 'Submit design'}
           </button>
-          <p className="mt-1.5 text-[11px] text-ink-dim">
+          <p className="mt-1.5 text-xs text-ink-dim">
             Submitting is final — you cannot edit afterwards.
           </p>
         </div>
@@ -235,7 +235,7 @@ export const MatchPanel = memo(function MatchPanel({
 
 function Panel({ children }: { children: React.ReactNode }) {
   return (
-    <aside className="flex w-full shrink-0 flex-col border-t border-line bg-surface lg:h-screen lg:w-80 lg:border-t-0 lg:border-l">
+    <aside className="flex w-full shrink-0 flex-col border-t border-line bg-surface lg:h-full lg:w-80 lg:border-t-0 lg:border-l">
       {children}
     </aside>
   );

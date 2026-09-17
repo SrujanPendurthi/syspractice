@@ -3,13 +3,58 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
     <title>syspractice</title>
+    <!--
+      Runs before the first paint and before React exists. Without it, a dark-mode
+      reader gets a full white page for as long as the bundle takes to boot — the
+      flash is worst on exactly the setup that chose dark to avoid being flashed.
+      Kept inline and dependency-free for the same reason: anything it has to wait
+      for puts the flash back. It is duplicated in `useTheme.tsx`, which owns the
+      same keys once React is running.
+    -->
+    <script>
+      (function () {
+        var d = document.documentElement;
+        function read(key, fallback) {
+          try {
+            return localStorage.getItem('syspractice.' + key) || fallback;
+          } catch (e) {
+            // Storage can throw outright in a locked-down browser. A themeless
+            // page is recoverable; a blank one is not.
+            return fallback;
+          }
+        }
+        function media(q) {
+          return window.matchMedia && window.matchMedia(q).matches;
+        }
+        var theme = read('theme', 'system');
+        d.dataset.theme =
+          theme === 'system' ? (media('(prefers-color-scheme: dark)') ? 'dark' : 'light') : theme;
+
+        var contrast = read('contrast', 'system');
+        d.dataset.contrast =
+          contrast === 'system' ? (media('(prefers-contrast: more)') ? 'high' : 'normal') : contrast;
+
+        var motion = read('motion', 'system');
+        d.dataset.motion =
+          motion === 'system'
+            ? media('(prefers-reduced-motion: reduce)')
+              ? 'reduced'
+              : 'full'
+            : motion;
+
+        d.dataset.text = read('text', 'normal');
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

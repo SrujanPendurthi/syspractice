@@ -116,7 +116,9 @@ export const NODE_KINDS: { kind: NodeKind; label: string; accent: string }[] = [
   { kind: 'client', label: 'Client', accent: '#94a3b8' },
   { kind: 'cdn', label: 'CDN', accent: '#38bdf8' },
   { kind: 'loadBalancer', label: 'Load Balancer', accent: '#22d3ee' },
-  { kind: 'apiGateway', label: 'API Gateway', accent: '#a78bfa' },
+  // Indigo rather than violet: violet is the interaction colour now, and a node that
+  // borrows it reads as something you are meant to click.
+  { kind: 'apiGateway', label: 'API Gateway', accent: '#818cf8' },
   { kind: 'service', label: 'Service', accent: '#4ade80' },
   { kind: 'database', label: 'Database', accent: '#fb923c' },
   { kind: 'cache', label: 'Cache', accent: '#f87171' },

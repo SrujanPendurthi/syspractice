@@ -208,40 +208,42 @@ export function Workspace({ scenarioId, onBack, matchId, level: fixedLevel }: Wo
   };
 
   return (
-    <div className="flex h-screen w-screen flex-col bg-page text-ink lg:flex-row">
+    <div className="relative flex h-full w-full flex-col bg-page text-ink lg:flex-row">
       {/* Layered over the workspace, which stays mounted underneath with its diagram,
-          notes and stage intact. */}
+          notes and stage intact. Absolute within the workspace rather than fixed to the
+          viewport, so the app bar stays visible and usable above it — which is the whole
+          point of the bar being constant. */}
       {signingIn && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-page">
+        <div className="absolute inset-0 z-30 overflow-y-auto bg-page">
           <AuthPage onDone={() => setSigningIn(false)} onBack={() => setSigningIn(false)} />
         </div>
       )}
       <aside className="flex w-full shrink-0 flex-col overflow-y-auto border-b border-line bg-surface lg:w-72 lg:border-r lg:border-b-0">
         <div className="border-b border-line px-4 py-3">
-          <button onClick={onBack} className="text-[12px] text-ink-dim hover:text-ink">
+          <button onClick={onBack} className="text-sm text-ink-dim hover:text-ink">
             All problems
           </button>
-          <h1 className="mt-1.5 flex items-baseline gap-2 text-[15px] font-semibold">
+          <h1 className="mt-1.5 flex items-baseline gap-2 text-lg font-semibold">
             {scenario?.title ?? 'syspractice'}
             {scenario && (
-              <span className={`text-[12px] font-normal capitalize ${DIFFICULTY_TEXT[scenario.difficulty]}`}>
+              <span className={`text-sm font-normal capitalize ${DIFFICULTY_TEXT[scenario.difficulty]}`}>
                 {scenario.difficulty}
               </span>
             )}
           </h1>
-          {status && <p className="mt-1 text-[11px] text-ink-dim">{status}</p>}
+          {status && <p className="mt-1 text-xs text-ink-dim">{status}</p>}
         </div>
 
         <Section title="Scenario">
           {fixedLevel ? (
-            <p className="text-[12px] capitalize text-ink-dim">Interviewing for {fixedLevel}</p>
+            <p className="text-sm capitalize text-ink-dim">Interviewing for {fixedLevel}</p>
           ) : (
-            <label className="mt-2 flex items-center gap-2 text-[12px] text-ink-dim">
+            <label className="mt-2 flex items-center gap-2 text-sm text-ink-dim">
               Interviewing for
               <select
                 value={level}
                 onChange={(e) => setLevel(e.target.value as Level)}
-                className="flex-1 rounded border border-line bg-page px-2 py-1 text-[13px] text-ink"
+                className="flex-1 rounded border border-line bg-page px-2 py-1 text-sm text-ink"
               >
                 {LEVELS.map((l) => (
                   <option key={l.level} value={l.level}>
@@ -253,7 +255,7 @@ export function Workspace({ scenarioId, onBack, matchId, level: fixedLevel }: Wo
           )}
 
           {scenario && (
-            <div className="mt-3 space-y-3 text-[12px] leading-relaxed text-ink-dim">
+            <div className="mt-3 space-y-3 text-sm leading-relaxed text-ink-dim">
               <p className="text-ink">{scenario.prompt}</p>
               <Requirements title="Functional" items={scenario.functional} />
               <Requirements title="Non-functional" items={scenario.nonFunctional} />
@@ -273,7 +275,7 @@ export function Workspace({ scenarioId, onBack, matchId, level: fixedLevel }: Wo
                     href={`/learn/${encodeURIComponent(c.id)}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="block rounded px-2 py-1 text-[12px] text-ink-dim hover:bg-line/50 hover:text-ink"
+                    className="block rounded px-2 py-1 text-sm text-ink-dim hover:bg-line/50 hover:text-ink"
                   >
                     {c.title}
                   </a>
@@ -289,7 +291,7 @@ export function Workspace({ scenarioId, onBack, matchId, level: fixedLevel }: Wo
             href={`/discuss?scenario=${encodeURIComponent(scenarioId)}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="block rounded px-2 py-1 text-[12px] text-ink-dim hover:bg-line/50 hover:text-ink"
+            className="block rounded px-2 py-1 text-sm text-ink-dim hover:bg-line/50 hover:text-ink"
           >
             How other people approached this
           </a>
@@ -301,14 +303,14 @@ export function Workspace({ scenarioId, onBack, matchId, level: fixedLevel }: Wo
               <button
                 key={kind}
                 onClick={() => addNode(kind)}
-                className="rounded border border-line bg-page px-2 py-1 text-left text-[12px] hover:border-ink-faint"
+                className="rounded border border-line bg-page px-2 py-1 text-left text-sm hover:border-ink-faint"
                 style={{ borderLeftColor: accent, borderLeftWidth: 3 }}
               >
                 {label}
               </button>
             ))}
           </div>
-          <ul className="mt-2 space-y-0.5 text-[11px] text-ink-dim">
+          <ul className="mt-2 space-y-0.5 text-xs text-ink-dim">
             <li>Drag a box to move it</li>
             <li>Drag handle to handle to connect two boxes</li>
             <li>Double-click a box or arrow to rename it</li>
@@ -319,16 +321,16 @@ export function Workspace({ scenarioId, onBack, matchId, level: fixedLevel }: Wo
         {!matchId && (
         <Section title="Attempt">
           <div className="flex gap-1">
-            <button onClick={save} className="flex-1 rounded border border-line bg-page px-2 py-1.5 text-[12px] hover:border-ink-faint">
+            <button onClick={save} className="flex-1 rounded border border-line bg-page px-2 py-1.5 text-sm hover:border-ink-faint">
               {attemptId ? `Save #${attemptId}` : 'Save'}
             </button>
-            <button onClick={reset} className="rounded border border-line bg-page px-2 py-1.5 text-[12px] hover:border-ink-faint">
+            <button onClick={reset} className="rounded border border-line bg-page px-2 py-1.5 text-sm hover:border-ink-faint">
               Start over
             </button>
           </div>
           {!user && (
-            <p className="mt-2 text-[11px] leading-relaxed text-ink-dim">
-              <button onClick={onSignIn} className="text-easy-ink underline underline-offset-2">
+            <p className="mt-2 text-xs leading-relaxed text-ink-dim">
+              <button onClick={onSignIn} className="text-accent underline underline-offset-2">
                 Sign in
               </button>{' '}
               to save this attempt and keep your progress.
@@ -345,7 +347,7 @@ export function Workspace({ scenarioId, onBack, matchId, level: fixedLevel }: Wo
               <li key={a.id}>
                 <button
                   onClick={() => open(a.id)}
-                  className="w-full rounded px-2 py-1 text-left text-[12px] text-ink-dim hover:bg-line/50"
+                  className="w-full rounded px-2 py-1 text-left text-sm text-ink-dim hover:bg-line/50"
                 >
                   #{a.id} · {a.nodeCount} nodes · {a.updatedAt.slice(0, 10)}
                 </button>
@@ -398,7 +400,7 @@ export function Workspace({ scenarioId, onBack, matchId, level: fixedLevel }: Wo
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="border-b border-line px-4 py-3">
-      <h2 className="mb-2 text-[12px] font-medium text-ink-dim">{title}</h2>
+      <h2 className="mb-2 text-sm font-medium text-ink-dim">{title}</h2>
       {children}
     </div>
   );

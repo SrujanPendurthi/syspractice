@@ -20,14 +20,14 @@ export function MatchRoom({ matchId, onBack }: { matchId: number; onBack: () => 
   if (error) {
     return (
       <div className="p-8">
-        <p className="text-[13px] text-hard-ink">{error}</p>
-        <button onClick={onBack} className="mt-2 text-[13px] text-ink-dim hover:text-ink">
+        <p className="text-sm text-hard-ink">{error}</p>
+        <button onClick={onBack} className="mt-2 text-sm text-ink-dim hover:text-ink">
           All matches
         </button>
       </div>
     );
   }
-  if (!match) return <p className="p-8 text-[13px] text-ink-dim">Loading match…</p>;
+  if (!match) return <p className="p-8 text-sm text-ink-dim">Loading match…</p>;
 
   return (
     <Workspace

@@ -18,12 +18,11 @@ interface DiscussProps {
   /** Null on the index, a post id on a thread. */
   postId: number | null;
   onOpen: (id: number | null) => void;
-  onBack: () => void;
   onOpenScenario: (id: string) => void;
   onSignIn: () => void;
 }
 
-export function Discuss({ postId, onOpen, onBack, onOpenScenario, onSignIn }: DiscussProps) {
+export function Discuss({ postId, onOpen, onOpenScenario, onSignIn }: DiscussProps) {
   const { user } = useAuth();
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
 
@@ -52,18 +51,8 @@ export function Discuss({ postId, onOpen, onBack, onOpenScenario, onSignIn }: Di
   };
 
   return (
-    <div className="min-h-full bg-page">
-      <header className="border-b border-line">
-        <div className="mx-auto flex max-w-3xl items-baseline gap-3 px-6 py-4">
-          <button onClick={onBack} className="font-mono text-[15px] font-medium tracking-tight">
-            syspractice
-          </button>
-          <span className="text-[13px] text-ink-dim">Discussion</span>
-          {user && <span className="ml-auto text-[13px] text-ink-dim">{user.displayName}</span>}
-        </div>
-      </header>
-
-      <main className="mx-auto max-w-3xl px-6 py-8">
+    <div className="mx-auto max-w-5xl px-6 py-8">
+      <div className="max-w-3xl">
         {postId === null ? (
           <Index
             filter={filter}
@@ -83,7 +72,7 @@ export function Discuss({ postId, onOpen, onBack, onOpenScenario, onSignIn }: Di
             onSignIn={onSignIn}
           />
         )}
-      </main>
+      </div>
     </div>
   );
 }
@@ -123,11 +112,11 @@ function Index({
   return (
     <>
       <div className="flex flex-wrap items-baseline gap-3">
-        <h1 className="text-[20px] font-semibold">Discussion</h1>
+        <h1 className="text-xl font-semibold">Discussion</h1>
         <select
           value={filter}
           onChange={(e) => onFilter(e.target.value)}
-          className="rounded border border-line bg-page px-2 py-1 text-[13px] text-ink-dim"
+          className="rounded border border-line bg-page px-2 py-1 text-sm text-ink-dim"
           aria-label="Filter by problem"
         >
           <option value="">All problems</option>
@@ -141,12 +130,16 @@ function Index({
         {signedIn ? (
           <button
             onClick={() => setComposing((c) => !c)}
-            className="ml-auto rounded border border-line px-2.5 py-1 text-[13px] hover:border-ink-faint"
+            className={`ml-auto rounded px-2.5 py-1 text-sm ${
+              composing
+                ? 'border border-line text-ink-dim hover:text-ink'
+                : 'bg-accent font-medium text-accent-ink hover:brightness-110'
+            }`}
           >
             {composing ? 'Cancel' : 'New post'}
           </button>
         ) : (
-          <button onClick={onSignIn} className="ml-auto text-[13px] text-easy-ink">
+          <button onClick={onSignIn} className="ml-auto text-sm text-easy-ink">
             Sign in to post
           </button>
         )}
@@ -165,13 +158,13 @@ function Index({
       )}
 
       {error && (
-        <p className="mt-4 rounded border border-hard/40 bg-hard/5 px-3 py-2 text-[13px] text-hard-ink">
+        <p className="mt-4 rounded border border-hard/40 bg-hard/5 px-3 py-2 text-sm text-hard-ink">
           {error}
         </p>
       )}
 
       {posts.length === 0 && !error && (
-        <p className="mt-6 text-[14px] text-ink-dim">
+        <p className="mt-6 text-base text-ink-dim">
           Nothing here yet.{' '}
           {filter ? 'No threads on this problem — start one.' : 'Start the first thread.'}
         </p>
@@ -188,16 +181,16 @@ function Index({
               onSignIn={onSignIn}
             />
             <div className="min-w-0 flex-1">
-              <button onClick={() => onOpen(p.id)} className="block text-left text-[14px] text-ink hover:underline">
+              <button onClick={() => onOpen(p.id)} className="block text-left text-base text-ink hover:underline">
                 {p.title}
               </button>
-              <p className="mt-0.5 text-[12px] text-ink-dim">
+              <p className="mt-0.5 text-sm text-ink-dim">
                 {p.author} · {ago(p.createdAt)} · {p.comments}{' '}
                 {p.comments === 1 ? 'comment' : 'comments'}
                 {p.scenarioId && (
                   <>
                     {' · '}
-                    <span className="text-easy-ink">{scenarioTitle(p.scenarioId)}</span>
+                    <span className="text-accent">{scenarioTitle(p.scenarioId)}</span>
                   </>
                 )}
               </p>
@@ -255,7 +248,7 @@ function Composer({
         maxLength={MAX_TITLE}
         required
         placeholder="Title"
-        className="w-full border-b border-line bg-transparent pb-2 text-[15px] outline-none"
+        className="w-full border-b border-line bg-transparent pb-2 text-lg outline-none"
       />
       <textarea
         value={body}
@@ -264,13 +257,13 @@ function Composer({
         required
         rows={6}
         placeholder="What did you run into?"
-        className="mt-3 w-full resize-y bg-transparent text-[14px] leading-relaxed outline-none"
+        className="mt-3 w-full resize-y bg-transparent text-base leading-relaxed outline-none"
       />
       <div className="mt-2 flex flex-wrap items-center gap-3">
         <select
           value={scenario}
           onChange={(e) => setScenario(e.target.value)}
-          className="rounded border border-line bg-page px-2 py-1 text-[13px] text-ink-dim"
+          className="rounded border border-line bg-page px-2 py-1 text-sm text-ink-dim"
           aria-label="Tag a problem"
         >
           <option value="">No problem tag</option>
@@ -283,12 +276,12 @@ function Composer({
         <button
           type="submit"
           disabled={busy}
-          className="ml-auto rounded bg-ink px-3 py-1.5 text-[13px] text-page disabled:opacity-50"
+          className="ml-auto rounded bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink disabled:opacity-50"
         >
           {busy ? 'Posting…' : 'Post'}
         </button>
       </div>
-      {error && <p className="mt-2 text-[13px] text-hard-ink">{error}</p>}
+      {error && <p className="mt-2 text-sm text-hard-ink">{error}</p>}
     </form>
   );
 }
@@ -335,16 +328,16 @@ function Vote({
       onClick={() => void cast(value)}
       aria-label={label}
       aria-pressed={state.myVote === value}
-      className={`leading-none ${state.myVote === value ? 'text-easy-ink' : 'text-ink-faint hover:text-ink-dim'}`}
+      className={`leading-none ${state.myVote === value ? 'text-accent' : 'text-ink-faint hover:text-ink-dim'}`}
     >
       {glyph}
     </button>
   );
 
   return (
-    <div className="flex w-8 shrink-0 flex-col items-center gap-0.5 pt-0.5 text-[13px]">
+    <div className="flex w-8 shrink-0 flex-col items-center gap-0.5 pt-0.5 text-sm">
       {arrow(1, '▲', 'Upvote')}
-      <span className="font-mono text-[12px] text-ink-dim">{state.score}</span>
+      <span className="font-mono text-sm text-ink-dim">{state.score}</span>
       {arrow(-1, '▼', 'Downvote')}
     </div>
   );
@@ -409,12 +402,12 @@ function Thread({
     }
   };
 
-  if (error && !post) return <p className="text-[13px] text-hard-ink">{error}</p>;
-  if (!post) return <p className="text-[13px] text-ink-dim">Loading…</p>;
+  if (error && !post) return <p className="text-sm text-hard-ink">{error}</p>;
+  if (!post) return <p className="text-sm text-ink-dim">Loading…</p>;
 
   return (
     <article>
-      <button onClick={onBack} className="text-[12px] text-ink-dim hover:text-ink">
+      <button onClick={onBack} className="text-sm text-ink-dim hover:text-ink">
         All discussion
       </button>
 
@@ -427,15 +420,15 @@ function Thread({
           onSignIn={onSignIn}
         />
         <div className="min-w-0 flex-1">
-          <h1 className="text-[20px] font-semibold">{post.title}</h1>
-          <p className="mt-0.5 text-[12px] text-ink-dim">
+          <h1 className="text-xl font-semibold">{post.title}</h1>
+          <p className="mt-0.5 text-sm text-ink-dim">
             {post.author} · {ago(post.createdAt)}
             {post.scenarioId && (
               <>
                 {' · '}
                 <button
                   onClick={() => onOpenScenario(post.scenarioId as string)}
-                  className="text-easy-ink underline underline-offset-2"
+                  className="text-accent underline underline-offset-2"
                 >
                   {scenarioTitle(post.scenarioId)}
                 </button>
@@ -456,12 +449,12 @@ function Thread({
           {/* Rendered as text, never as markup. The body is user input, and a renderer
               here would buy a dependency and an injection surface at once — the same
               reasoning that keeps the concept articles structured data. */}
-          <p className="mt-4 whitespace-pre-wrap text-[14px] leading-[1.7] text-ink">{post.body}</p>
+          <p className="mt-4 whitespace-pre-wrap text-base leading-[1.7] text-ink">{post.body}</p>
         </div>
       </div>
 
       <section className="mt-8 border-t border-line pt-5">
-        <h2 className="text-[15px] font-semibold">
+        <h2 className="text-lg font-semibold">
           {comments.length} {comments.length === 1 ? 'comment' : 'comments'}
         </h2>
 
@@ -474,31 +467,31 @@ function Thread({
               required
               rows={3}
               placeholder="Add a comment"
-              className="w-full resize-y rounded border border-line bg-transparent p-2.5 text-[14px] leading-relaxed outline-none focus:border-ink-faint"
+              className="w-full resize-y rounded border border-line bg-transparent p-2.5 text-base leading-relaxed outline-none focus:border-ink-faint"
             />
             <button
               type="submit"
               disabled={busy}
-              className="mt-2 rounded bg-ink px-3 py-1.5 text-[13px] text-page disabled:opacity-50"
+              className="mt-2 rounded bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink disabled:opacity-50"
             >
               {busy ? 'Posting…' : 'Comment'}
             </button>
           </form>
         ) : (
-          <p className="mt-3 text-[13px] text-ink-dim">
-            <button onClick={onSignIn} className="text-easy-ink underline underline-offset-2">
+          <p className="mt-3 text-sm text-ink-dim">
+            <button onClick={onSignIn} className="text-accent underline underline-offset-2">
               Sign in
             </button>{' '}
             to join the thread.
           </p>
         )}
 
-        {error && <p className="mt-3 text-[13px] text-hard-ink">{error}</p>}
+        {error && <p className="mt-3 text-sm text-hard-ink">{error}</p>}
 
         <ul className="mt-6 space-y-5">
           {comments.map((c) => (
             <li key={c.id} className="border-l-2 border-line pl-3">
-              <p className="text-[12px] text-ink-dim">
+              <p className="text-sm text-ink-dim">
                 {c.author} · {ago(c.createdAt)}
                 {canRemove(c.authorId) && (
                   <>
@@ -512,7 +505,7 @@ function Thread({
                   </>
                 )}
               </p>
-              <p className="mt-1 whitespace-pre-wrap text-[14px] leading-relaxed text-ink">
+              <p className="mt-1 whitespace-pre-wrap text-base leading-relaxed text-ink">
                 {c.body}
               </p>
             </li>

@@ -1,29 +1,157 @@
 @import 'tailwindcss';
 
-/* LeetCode's difficulty triad is the anchor of the palette — they are the only
-   saturated colours in the product, and they carry meaning everywhere they appear.
-   Everything structural stays greyscale so the three read instantly. */
+/* ============================================================================
+   Colour has two jobs here, and they are kept apart on purpose.
+
+   VIOLET is interaction: links, focus, the active nav item, primary buttons.
+   TEAL / AMBER / ROSE is assessment: difficulty, outcome, status. Nothing else.
+   GREYSCALE is structure.
+
+   They used to be one set — the "Sign in" button and the word "Easy" were the
+   same teal — so the palette said "this is an easy thing" and "this is the thing
+   to click" with one colour. Violet is not decoration; it is what separates
+   those two meanings.
+   ============================================================================ */
+
 @theme {
+  /* Light is the default set. Every other theme overrides these same names, so
+     a component never knows which theme it is in. */
   --color-page: #ffffff;
   --color-surface: #f7f8fa;
+  --color-raised: #ffffff;
   --color-line: #e5e7eb;
+  --color-line-strong: #d1d5db;
   --color-ink: #262626;
   --color-ink-dim: #6b7280;
   --color-ink-faint: #9ca3af;
 
-  /* Vivid, for shapes: ring arcs, dots, fills. Large areas, so contrast is not at issue. */
+  /* 7.4:1 on white — passes AA as body text, not just as a large heading. */
+  --color-accent: #6d28d9;
+  --color-accent-soft: #f5f3ff;
+  --color-accent-line: #ddd6fe;
+  /* Text that sits ON accent. */
+  --color-accent-ink: #ffffff;
+
+  /* Vivid, for shapes: ring arcs, dots, fills, the stage pips. Large areas, so
+     contrast is not at issue. These are LeetCode's values. */
   --color-easy: #00b8a3;
   --color-medium: #ffb800;
   --color-hard: #ff375f;
 
-  /* Darkened for type. The vivid triad on white runs 1.9:1 to 2.9:1, which fails as text
-     no matter how familiar it looks. Same hues, enough luminance to read. */
+  /* The same hues, moved until they read as text against THIS theme's page.
+     On white that means darker. On near-black it means lighter — see the dark
+     block below, where these go the other way. That inversion is the whole
+     reason the two sets exist separately rather than being one colour reused. */
   --color-easy-ink: #06776b;
   --color-medium-ink: #8a5a06;
   --color-hard-ink: #c4123f;
 
+  /* The canvas dot grid, which has to stay visible without becoming texture. */
+  --color-grid: #d4d4d8;
+
   --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', monospace;
+
+  /* A ~1.25 scale, tight, because this is a dense tool and not an article.
+     In rem so that the large-text accessibility setting scales all of it from
+     one root font-size rather than needing a second set of sizes. */
+  --text-xs: 0.6875rem; /* 11px */
+  --text-xs--line-height: 1.45;
+  --text-sm: 0.78125rem; /* 12.5px */
+  --text-sm--line-height: 1.5;
+  --text-base: 0.875rem; /* 14px */
+  --text-base--line-height: 1.6;
+  --text-lg: 1rem; /* 16px */
+  --text-lg--line-height: 1.4;
+  --text-xl: 1.25rem; /* 20px */
+  --text-xl--line-height: 1.3;
+  --text-2xl: 1.75rem; /* 28px */
+  --text-2xl--line-height: 1.2;
+
+  /* Long-form prose only: the concept articles. More leading than the UI scale,
+     because it is the one place someone reads paragraphs rather than scans. */
+  --text-read: 0.9375rem; /* 15px */
+  --text-read--line-height: 1.72;
+}
+
+/* --- dark ----------------------------------------------------------------
+   Near-black rather than black: the canvas dot grid disappears on #000, and a
+   pure-black page under a bright diagram is fatiguing to read a rubric against.
+   The slight blue cast keeps the violet accent from looking like an accident. */
+html[data-theme='dark'] {
+  --color-page: #0f1115;
+  --color-surface: #16181d;
+  --color-raised: #1b1e25;
+  --color-line: #262a33;
+  --color-line-strong: #363c47;
+  --color-ink: #e8eaed;
+  --color-ink-dim: #9aa0ab;
+  --color-ink-faint: #6b7280;
+
+  --color-accent: #c4b5fd;
+  --color-accent-soft: #211d38;
+  --color-accent-line: #3b3363;
+  --color-accent-ink: #14121f;
+
+  /* The vivid triad is unchanged — it was always fine on dark. */
+  --color-easy-ink: #2ee6cf;
+  --color-medium-ink: #ffc93f;
+  --color-hard-ink: #ff6b86;
+
+  --color-grid: #2b2f38;
+}
+
+/* --- high contrast -------------------------------------------------------
+   A real token set, not a filter. Surfaces collapse into the page so the only
+   remaining boundaries are lines, every line becomes visible rather than
+   suggested, and the accent and triad are pushed until they clear AAA. */
+html[data-contrast='high'] {
+  --color-surface: #ffffff;
+  --color-raised: #ffffff;
+  --color-line: #767676;
+  --color-line-strong: #000000;
+  --color-ink: #000000;
+  --color-ink-dim: #303030;
+  --color-ink-faint: #4a4a4a;
+
+  --color-accent: #4c1d95;
+  --color-accent-soft: #ede9fe;
+  --color-accent-line: #4c1d95;
+
+  --color-easy-ink: #005a50;
+  --color-medium-ink: #6b4400;
+  --color-hard-ink: #a1002f;
+
+  --color-grid: #9a9a9a;
+}
+
+html[data-theme='dark'][data-contrast='high'] {
+  --color-page: #000000;
+  --color-surface: #000000;
+  --color-raised: #0a0a0a;
+  --color-line: #8a8a8a;
+  --color-line-strong: #ffffff;
+  --color-ink: #ffffff;
+  --color-ink-dim: #d4d4d4;
+  --color-ink-faint: #b0b0b0;
+
+  --color-accent: #d8caff;
+  --color-accent-soft: #241d3d;
+  --color-accent-line: #d8caff;
+  --color-accent-ink: #000000;
+
+  --color-easy-ink: #5cf5e0;
+  --color-medium-ink: #ffd166;
+  --color-hard-ink: #ff93a6;
+
+  --color-grid: #4a4a4a;
+}
+
+/* --- text size -----------------------------------------------------------
+   One root font-size, because the scale above is in rem. Anything hard-coded
+   in px will not follow, which is the reason the scale exists. */
+html[data-text='large'] {
+  font-size: 18px;
 }
 
 html,
@@ -39,12 +167,23 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Keyboard focus has to stay visible on a page this quiet. */
-:focus-visible {
-  outline: 2px solid var(--color-easy);
-  outline-offset: 2px;
+/* Counts sit in columns and are compared down the page, so they get fixed-width
+   digits. This is alignment, not decoration. */
+.tnum {
+  font-variant-numeric: tabular-nums;
 }
 
+/* Keyboard focus has to stay visible on a page this quiet, and it is violet
+   because focus is interaction — the same colour as every other thing you can
+   act on. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Both the system preference and the in-app setting, because someone can want
+   this on one site without changing it for their whole machine. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -52,5 +191,58 @@ body {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
+}
+
+html[data-motion='reduced'] *,
+html[data-motion='reduced'] *::before,
+html[data-motion='reduced'] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* React Flow draws its own chrome and does not know about any of this. */
+.react-flow__background circle,
+.react-flow__background path {
+  color: var(--color-grid);
+}
+
+.react-flow__controls-button {
+  background: var(--color-raised);
+  border-bottom-color: var(--color-line);
+  fill: var(--color-ink-dim);
+}
+
+.react-flow__controls-button:hover {
+  background: var(--color-surface);
+}
+
+.react-flow__attribution {
+  background: transparent;
+  color: var(--color-ink-faint);
+}
+
+.react-flow__edge-path {
+  stroke: var(--color-ink-faint);
+}
+
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge:focus .react-flow__edge-path {
+  stroke: var(--color-accent);
+}
+
+.react-flow__edge-text {
+  fill: var(--color-ink-dim);
+}
+
+.react-flow__edge-textbg {
+  fill: var(--color-page);
+}
+
+.react-flow__handle {
+  background: var(--color-ink-faint);
+  border-color: var(--color-page);
 }

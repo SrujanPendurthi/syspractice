@@ -7,7 +7,6 @@ import { useAuth } from './useAuth';
 
 interface VersusProps {
   onOpen: (matchId: number) => void;
-  onBack: () => void;
   onSignIn: () => void;
 }
 
@@ -21,7 +20,7 @@ const LENGTHS = [10, 20, 30];
  * worth making an account for, and a login wall in front of an empty room is how a
  * two-player feature never gets its second player.
  */
-export function Versus({ onOpen, onBack, onSignIn }: VersusProps) {
+export function Versus({ onOpen, onSignIn }: VersusProps) {
   const { user } = useAuth();
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [open, setOpen] = useState<Match[]>([]);
@@ -62,27 +61,17 @@ export function Versus({ onOpen, onBack, onSignIn }: VersusProps) {
   };
 
   return (
-    <div className="min-h-full bg-page">
-      <header className="border-b border-line">
-        <div className="mx-auto flex max-w-3xl items-baseline gap-3 px-6 py-4">
-          <button onClick={onBack} className="font-mono text-[15px] font-medium tracking-tight">
-            syspractice
-          </button>
-          <span className="text-[13px] text-ink-dim">Head to head</span>
-          {user && <span className="ml-auto text-[13px] text-ink-dim">{user.displayName}</span>}
-        </div>
-      </header>
-
-      <main className="mx-auto max-w-3xl px-6 py-8">
-        <h1 className="text-[20px] font-semibold">Race someone</h1>
-        <p className="mt-1.5 max-w-prose text-[14px] leading-relaxed text-ink-dim">
+    <div className="mx-auto max-w-5xl px-6 py-8">
+      <div className="max-w-3xl">
+        <h1 className="text-xl font-semibold">Race someone</h1>
+        <p className="mt-1.5 max-w-prose text-base leading-relaxed text-ink-dim">
           Same problem, same rubric, same clock, separate boards. Neither of you sees the
           other's design until the time is up — then one model call grades both and says
           which covered more of the rubric.
         </p>
 
         {error && (
-          <p className="mt-4 rounded border border-hard/40 bg-hard/5 px-3 py-2 text-[13px] text-hard-ink">
+          <p className="mt-4 rounded border border-hard/40 bg-hard/5 px-3 py-2 text-sm text-hard-ink">
             {error}
           </p>
         )}
@@ -90,8 +79,8 @@ export function Versus({ onOpen, onBack, onSignIn }: VersusProps) {
         {user ? (
           <Challenge scenarios={scenarios} onCreate={(id) => onOpen(id)} onError={setError} />
         ) : (
-          <p className="mt-6 text-[14px] text-ink-dim">
-            <button onClick={onSignIn} className="text-easy-ink underline underline-offset-2">
+          <p className="mt-6 text-base text-ink-dim">
+            <button onClick={onSignIn} className="text-accent underline underline-offset-2">
               Sign in
             </button>{' '}
             to post a challenge or take one.
@@ -104,7 +93,7 @@ export function Versus({ onOpen, onBack, onSignIn }: VersusProps) {
               {user && m.hostId === user.id ? (
                 <button
                   onClick={() => void act(() => cancelMatch(m.id))}
-                  className="text-[13px] text-ink-dim hover:text-ink"
+                  className="text-sm text-ink-dim hover:text-ink"
                 >
                   Cancel
                 </button>
@@ -118,7 +107,7 @@ export function Versus({ onOpen, onBack, onSignIn }: VersusProps) {
                         })
                       : onSignIn()
                   }
-                  className="rounded border border-line px-2.5 py-1 text-[13px] hover:border-ink-faint"
+                  className="rounded bg-accent px-2.5 py-1 text-sm font-medium text-accent-ink hover:brightness-110"
                 >
                   Take it
                 </button>
@@ -133,7 +122,7 @@ export function Versus({ onOpen, onBack, onSignIn }: VersusProps) {
               <Row key={m.id} match={m} title={title}>
                 <button
                   onClick={() => onOpen(m.id)}
-                  className="text-[13px] text-easy-ink hover:underline"
+                  className="text-sm text-accent hover:underline"
                 >
                   {status(m, user.id)}
                 </button>
@@ -141,7 +130,7 @@ export function Versus({ onOpen, onBack, onSignIn }: VersusProps) {
             ))}
           </Group>
         )}
-      </main>
+      </div>
     </div>
   );
 }
@@ -191,7 +180,7 @@ function Challenge({
         value={scenarioId}
         onChange={(e) => setScenarioId(e.target.value)}
         required
-        className="rounded border border-line bg-page px-2 py-1 text-[13px]"
+        className="rounded border border-line bg-page px-2 py-1 text-sm"
         aria-label="Problem"
       >
         <option value="">Pick a problem…</option>
@@ -205,7 +194,7 @@ function Challenge({
       <select
         value={level}
         onChange={(e) => setLevel(e.target.value as Level)}
-        className="rounded border border-line bg-page px-2 py-1 text-[13px]"
+        className="rounded border border-line bg-page px-2 py-1 text-sm"
         aria-label="Level"
       >
         {LEVELS.map((l) => (
@@ -218,7 +207,7 @@ function Challenge({
       <select
         value={minutes}
         onChange={(e) => setMinutes(Number(e.target.value))}
-        className="rounded border border-line bg-page px-2 py-1 text-[13px]"
+        className="rounded border border-line bg-page px-2 py-1 text-sm"
         aria-label="Length"
       >
         {LENGTHS.map((n) => (
@@ -231,7 +220,7 @@ function Challenge({
       <button
         type="submit"
         disabled={busy}
-        className="ml-auto rounded bg-ink px-3 py-1.5 text-[13px] text-page disabled:opacity-50"
+        className="ml-auto rounded bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink disabled:opacity-50"
       >
         {busy ? 'Posting…' : 'Post challenge'}
       </button>
@@ -250,9 +239,9 @@ function Group({
 }) {
   return (
     <section className="mt-8">
-      <h2 className="text-[15px] font-semibold">{title}</h2>
+      <h2 className="text-lg font-semibold">{title}</h2>
       {children.length === 0 ? (
-        <p className="mt-2 text-[14px] text-ink-dim">{empty}</p>
+        <p className="mt-2 text-base text-ink-dim">{empty}</p>
       ) : (
         <ul className="mt-2 border-t border-line">{children}</ul>
       )}
@@ -272,9 +261,12 @@ function Row({
   return (
     <li className="flex items-center gap-3 border-b border-line py-3">
       <div className="min-w-0 flex-1">
-        <p className="text-[14px] text-ink">{title(match.scenarioId)}</p>
-        <p className="mt-0.5 text-[12px] capitalize text-ink-dim">
-          {match.host} · {match.level} · {match.minutes} min · {ago(match.createdAt)}
+        <p className="text-base text-ink">{title(match.scenarioId)}</p>
+        {/* `capitalize` only on the level. On the whole line it title-cases the
+            units too, and the row reads "20 Min · 11m Ago". */}
+        <p className="mt-0.5 text-sm text-ink-dim">
+          {match.host} · <span className="capitalize">{match.level}</span> · {match.minutes} min ·{' '}
+          {ago(match.createdAt)}
         </p>
       </div>
       {children}
