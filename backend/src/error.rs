@@ -1,4 +1,4 @@
-use axum::extract::rejection::JsonRejection;
+use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -38,6 +38,11 @@ pub enum AppError {
     #[error("{0}")]
     BadRequest(String),
 
+    /// Nothing is routed for that method on a path that does exist. Axum answers this
+    /// itself with an empty body, which reaches `api.ts` as an unexplained failure.
+    #[error("that method is not allowed here")]
+    MethodNotAllowed,
+
     /// Rate limiting. 429 rather than 400 — this is "not yet", not "malformed".
     #[error("{0}")]
     Throttled(&'static str),
@@ -55,6 +60,7 @@ impl IntoResponse for AppError {
             AppError::BadCredentials => StatusCode::UNAUTHORIZED,
             AppError::EmailTaken | AppError::Invalid(_) => StatusCode::BAD_REQUEST,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            AppError::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             AppError::QuotaExceeded(_) | AppError::Throttled(_) => StatusCode::TOO_MANY_REQUESTS,
             AppError::Runner(_) => StatusCode::BAD_GATEWAY,
             AppError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -64,8 +70,19 @@ impl IntoResponse for AppError {
     }
 }
 
-impl From<JsonRejection> for AppError {
-    fn from(r: JsonRejection) -> Self {
-        AppError::BadRequest(r.body_text())
-    }
+/// Axum's own extractor rejections are plain text. Every one of them has to be
+/// translated, not just the body's: a path id that will not parse reached the browser as
+/// `Invalid URL: Cannot parse \`abc\` to a \`i64\`` with a text/plain content type, which
+/// `api.ts` cannot read and reports as the bare status line. `AppJson` closed this for
+/// request bodies; `AppPath` and `AppQuery` close it for the rest.
+macro_rules! from_rejection {
+    ($($t:ty),+) => {$(
+        impl From<$t> for AppError {
+            fn from(r: $t) -> Self {
+                AppError::BadRequest(r.body_text())
+            }
+        }
+    )+};
 }
+
+from_rejection!(JsonRejection, PathRejection, QueryRejection);

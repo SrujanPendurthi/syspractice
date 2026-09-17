@@ -12,7 +12,7 @@ use axum::response::sse::{KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use axum_macros::FromRequest;
+use axum_macros::{FromRequest, FromRequestParts};
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 use serde_json::json;
@@ -56,6 +56,18 @@ pub struct AppState {
 #[from_request(via(Json), rejection(AppError))]
 pub struct AppJson<T>(pub T);
 
+/// The same treatment for the path and the query string. A path id that will not parse as
+/// an `i64` is a 400 either way — what these change is that it comes back as JSON the
+/// frontend can read, rather than as `text/plain` that `api.ts` reports as the bare
+/// status line with no reason attached.
+#[derive(FromRequestParts)]
+#[from_request(via(Path), rejection(AppError))]
+pub struct AppPath<T>(pub T);
+
+#[derive(FromRequestParts)]
+#[from_request(via(Query), rejection(AppError))]
+pub struct AppQuery<T>(pub T);
+
 pub fn router(state: AppState) -> Router {
     // Nested so the API gets its own fallback. Without it an unknown /api path falls
     // through to the SPA and answers 200 with index.html, which `api.ts` then tries to
@@ -79,7 +91,10 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
         .route("/auth/me", get(me))
-        .fallback(|| async { AppError::NotFound });
+        .fallback(|| async { AppError::NotFound })
+        // Axum answers a wrong method with an empty body, which reaches `api.ts` as a
+        // failure with nothing in it to show the user.
+        .method_not_allowed_fallback(|| async { AppError::MethodNotAllowed });
 
     Router::new().nest("/api", api).with_state(state)
 }
@@ -176,7 +191,7 @@ async fn create_attempt(
 async fn get_attempt(
     State(s): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(id): Path<i64>,
+    AppPath(id): AppPath<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     Ok(Json(db::get_attempt(&s.pool, user.id, id).await?))
 }
@@ -184,7 +199,7 @@ async fn get_attempt(
 async fn update_attempt(
     State(s): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(id): Path<i64>,
+    AppPath(id): AppPath<i64>,
     AppJson(body): AppJson<UpdateAttempt>,
 ) -> Result<impl IntoResponse, AppError> {
     check_notes(&body.notes)?;
@@ -268,7 +283,7 @@ async fn list_concepts() -> impl IntoResponse {
     Json(cards)
 }
 
-async fn get_concept(Path(id): Path<String>) -> Result<impl IntoResponse, AppError> {
+async fn get_concept(AppPath(id): AppPath<String>) -> Result<impl IntoResponse, AppError> {
     Ok(Json(concepts::find(&id).ok_or(AppError::NotFound)?))
 }
 
@@ -280,7 +295,7 @@ struct MarkRead {
 async fn mark_concept_read(
     State(s): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(id): Path<String>,
+    AppPath(id): AppPath<String>,
     AppJson(body): AppJson<MarkRead>,
 ) -> Result<impl IntoResponse, AppError> {
     // Validated against the static list so the table cannot fill with ids that no longer
@@ -323,7 +338,7 @@ struct PostFilter {
 async fn list_posts(
     State(s): State<AppState>,
     MaybeUser(user): MaybeUser,
-    Query(filter): Query<PostFilter>,
+    AppQuery(filter): AppQuery<PostFilter>,
 ) -> Result<impl IntoResponse, AppError> {
     let posts =
         db::list_posts(&s.pool, user.map(|u| u.id), filter.scenario.as_deref()).await?;
@@ -333,7 +348,7 @@ async fn list_posts(
 async fn get_post(
     State(s): State<AppState>,
     MaybeUser(user): MaybeUser,
-    Path(id): Path<i64>,
+    AppPath(id): AppPath<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     let post = db::get_post(&s.pool, user.map(|u| u.id), id).await?;
     let comments = db::list_comments(&s.pool, id).await?;
@@ -385,7 +400,7 @@ async fn create_post(
 async fn delete_post(
     State(s): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(id): Path<i64>,
+    AppPath(id): AppPath<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     db::delete_post(&s.pool, &user, id).await?;
     Ok(Json(json!({ "deleted": id })))
@@ -399,7 +414,7 @@ struct CreateComment {
 async fn create_comment(
     State(s): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(post_id): Path<i64>,
+    AppPath(post_id): AppPath<i64>,
     AppJson(body): AppJson<CreateComment>,
 ) -> Result<impl IntoResponse, AppError> {
     let key = user.id.to_string();
@@ -414,7 +429,7 @@ async fn create_comment(
 async fn delete_comment(
     State(s): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(id): Path<i64>,
+    AppPath(id): AppPath<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     db::delete_comment(&s.pool, &user, id).await?;
     Ok(Json(json!({ "deleted": id })))
@@ -429,7 +444,7 @@ struct Vote {
 async fn vote_post(
     State(s): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(post_id): Path<i64>,
+    AppPath(post_id): AppPath<i64>,
     AppJson(body): AppJson<Vote>,
 ) -> Result<impl IntoResponse, AppError> {
     if !(-1..=1).contains(&body.value) {
