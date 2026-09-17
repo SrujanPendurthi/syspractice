@@ -1,7 +1,7 @@
-import { useState } from "react";
-import { Segmented } from "./Segmented";
-import { useAuth } from "./useAuth";
-import { useDismissable, useSettings } from "./useTheme";
+import { useState } from 'react';
+import { Segmented } from './Segmented';
+import { useAuth } from './useAuth';
+import { useDismissable, useSettings } from './useTheme';
 
 /**
  * The one bar, on every page.
@@ -21,16 +21,16 @@ interface AppBarProps {
 }
 
 const SECTIONS = [
-  { href: "/", label: "Problems" },
-  { href: "/learn", label: "Concepts" },
-  { href: "/discuss", label: "Discuss" },
-  { href: "/versus", label: "1v1" },
+  { href: '/', label: 'Problems' },
+  { href: '/learn', label: 'Concepts' },
+  { href: '/discuss', label: 'Discuss' },
+  { href: '/versus', label: '1v1' },
 ];
 
 /** `/` only matches itself; every other section owns its subtree. */
 const isActive = (path: string, href: string) =>
-  href === "/"
-    ? path === "/" || path.startsWith("/s/")
+  href === '/'
+    ? path === '/' || path.startsWith('/s/')
     : path === href || path.startsWith(`${href}/`);
 
 export function AppBar({ path, navigate, sections = true }: AppBarProps) {
@@ -43,20 +43,15 @@ export function AppBar({ path, navigate, sections = true }: AppBarProps) {
           href="/"
           onClick={(e) => {
             e.preventDefault();
-            navigate("/");
+            navigate('/');
           }}
           className="flex shrink-0 items-center gap-2 pr-3 text-ink"
         >
           <Mark />
-          <span className="font-mono text-base font-semibold tracking-tight">
-            syspractice
-          </span>
+          <span className="font-mono text-base font-semibold tracking-tight">syspractice</span>
         </a>
 
-        <nav
-          className="flex min-w-0 items-stretch gap-0.5 overflow-x-auto"
-          aria-label="Sections"
-        >
+        <nav className="flex min-w-0 items-stretch gap-0.5 overflow-x-auto" aria-label="Sections">
           {sections &&
             SECTIONS.map((s) => {
               const active = isActive(path, s.href);
@@ -68,9 +63,9 @@ export function AppBar({ path, navigate, sections = true }: AppBarProps) {
                     e.preventDefault();
                     navigate(s.href);
                   }}
-                  aria-current={active ? "page" : undefined}
+                  aria-current={active ? 'page' : undefined}
                   className={`relative flex shrink-0 items-center px-3 text-base transition-colors ${
-                    active ? "text-ink" : "text-ink-dim hover:text-ink"
+                    active ? 'text-ink' : 'text-ink-dim hover:text-ink'
                   }`}
                 >
                   {s.label}
@@ -88,9 +83,7 @@ export function AppBar({ path, navigate, sections = true }: AppBarProps) {
         <div className="ml-auto flex shrink-0 items-center gap-1 pl-3">
           {user ? (
             <>
-              <span className="hidden text-sm text-ink-dim sm:inline">
-                {user.displayName}
-              </span>
+              <span className="hidden text-sm text-ink-dim sm:inline">{user.displayName}</span>
               <button
                 onClick={() => void signOut()}
                 className="rounded px-2 py-1 text-sm text-ink-dim hover:bg-surface hover:text-ink"
@@ -100,7 +93,7 @@ export function AppBar({ path, navigate, sections = true }: AppBarProps) {
             </>
           ) : (
             <button
-              onClick={() => navigate("/login")}
+              onClick={() => navigate('/login')}
               className="rounded px-2 py-1 text-sm font-medium text-accent hover:bg-accent-soft"
             >
               Sign in
@@ -120,11 +113,7 @@ export function AppBar({ path, navigate, sections = true }: AppBarProps) {
  */
 function Mark() {
   return (
-    <svg
-      viewBox="0 0 20 20"
-      className="h-[18px] w-[18px] text-accent"
-      aria-hidden="true"
-    >
+    <svg viewBox="0 0 20 20" className="h-[18px] w-[18px] text-accent" aria-hidden="true">
       <path
         d="M4.5 5.5h11M15.5 5.5 9.5 14.5"
         fill="none"
@@ -156,24 +145,13 @@ function SettingsMenu() {
         aria-haspopup="dialog"
         aria-label="Appearance and accessibility"
         className={`flex h-8 w-8 items-center justify-center rounded hover:bg-surface ${
-          open ? "bg-surface text-ink" : "text-ink-dim"
+          open ? 'bg-surface text-ink' : 'text-ink-dim'
         }`}
       >
         {/* Half-filled circle: the universal contrast glyph, and this menu is
             mostly about contrast. */}
-        <svg
-          viewBox="0 0 20 20"
-          className="h-[18px] w-[18px]"
-          aria-hidden="true"
-        >
-          <circle
-            cx="10"
-            cy="10"
-            r="7.25"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-          />
+        <svg viewBox="0 0 20 20" className="h-[18px] w-[18px]" aria-hidden="true">
+          <circle cx="10" cy="10" r="7.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
           <path d="M10 2.75a7.25 7.25 0 0 1 0 14.5z" fill="currentColor" />
         </svg>
       </button>
@@ -191,9 +169,9 @@ function SettingsMenu() {
               value={s.theme}
               onChange={s.setTheme}
               options={[
-                { value: "system", label: "System" },
-                { value: "light", label: "Light" },
-                { value: "dark", label: "Dark" },
+                { value: 'system', label: 'System' },
+                { value: 'light', label: 'Light' },
+                { value: 'dark', label: 'Dark' },
               ]}
             />
             <Segmented
@@ -202,9 +180,9 @@ function SettingsMenu() {
               value={s.contrast}
               onChange={s.setContrast}
               options={[
-                { value: "system", label: "System" },
-                { value: "normal", label: "Normal" },
-                { value: "high", label: "High" },
+                { value: 'system', label: 'System' },
+                { value: 'normal', label: 'Normal' },
+                { value: 'high', label: 'High' },
               ]}
             />
             <Segmented
@@ -213,9 +191,9 @@ function SettingsMenu() {
               value={s.motion}
               onChange={s.setMotion}
               options={[
-                { value: "system", label: "System" },
-                { value: "full", label: "Full" },
-                { value: "reduced", label: "Reduced" },
+                { value: 'system', label: 'System' },
+                { value: 'full', label: 'Full' },
+                { value: 'reduced', label: 'Reduced' },
               ]}
             />
             <Segmented
@@ -224,14 +202,13 @@ function SettingsMenu() {
               value={s.text}
               onChange={s.setText}
               options={[
-                { value: "normal", label: "Normal" },
-                { value: "large", label: "Large" },
+                { value: 'normal', label: 'Normal' },
+                { value: 'large', label: 'Large' },
               ]}
             />
           </div>
           <p className="mt-3 border-t border-line pt-2.5 text-xs leading-relaxed text-ink-dim">
-            Saved in this browser. System follows your device, currently{" "}
-            {s.resolvedTheme}.
+            Saved in this browser. System follows your device, currently {s.resolvedTheme}.
           </p>
         </div>
       )}

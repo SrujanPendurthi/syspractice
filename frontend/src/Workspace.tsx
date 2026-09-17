@@ -68,6 +68,8 @@ export function Workspace({ scenarioId, onBack, matchId, level: fixedLevel }: Wo
   const [level, setLevel] = useState<Level>(fixedLevel ?? 'senior');
 
   const [nodes, setNodes, onNodesChange] = useNodesState<CanvasNode>([]);
+  // Bumped when a saved attempt replaces the canvas, so the diagram is re-framed.
+  const [fitKey, setFitKey] = useState(0);
   const [edges, setEdges, onEdgesChange] = useEdgesState<CanvasEdge>([]);
 
   // Mirror of the live canvas, so `getTopology` can stay referentially stable and keep
@@ -165,6 +167,7 @@ export function Workspace({ scenarioId, onBack, matchId, level: fixedLevel }: Wo
       const { nodes: n, edges: e } = fromTopology(a.topology);
       setNodes(n);
       setEdges(e);
+      setFitKey((k) => k + 1);
       setNotes(a.notes);
       setStage(a.stage);
       setAttemptId(a.id);
@@ -361,6 +364,7 @@ export function Workspace({ scenarioId, onBack, matchId, level: fixedLevel }: Wo
 
       <main className="min-h-[24rem] flex-1">
         <Canvas
+          fitKey={fitKey}
           nodes={nodes}
           edges={edges}
           onNodesChange={onNodesChange}

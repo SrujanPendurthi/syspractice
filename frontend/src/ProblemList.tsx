@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { listProgress, listScenarios, listTracks } from './api';
 import { Segmented } from './Segmented';
+import { STAGES_BY_TRACK } from './types';
 import type { Difficulty, Scenario, ScenarioProgress, Track, TrackCard } from './types';
 import { useAuth } from './useAuth';
 
@@ -87,8 +88,10 @@ export function ProblemList({ onOpen, onSignIn }: ProblemListProps) {
       <div className="lg:col-span-2">
         <h1 className="text-xl font-semibold">Problems</h1>
         <p className="mt-1 max-w-prose text-base text-ink-dim">
-          Draw the architecture, then work the five interview stages. The critic grades one
-          stage at a time against the rubric for the level you pick.
+          Draw the architecture, then work the interview one stage at a time. Systems problems
+          walk {STAGES_BY_TRACK.classic.length} stages and machine learning ones walk{' '}
+          {STAGES_BY_TRACK.ml.length}; the critic grades each against the rubric for the level you
+          pick.
         </p>
       </div>
 
@@ -125,7 +128,9 @@ export function ProblemList({ onOpen, onSignIn }: ProblemListProps) {
                 <span className="sr-only">Status</span>
               </th>
               <th className="py-2 font-medium" scope="col">Problem</th>
-              <th className="w-32 py-2 font-medium" scope="col">Interview</th>
+              {filter === 'all' && (
+                <th className="w-32 py-2 font-medium" scope="col">Interview</th>
+              )}
               <th className="w-24 py-2 font-medium" scope="col">Difficulty</th>
               <th className="w-20 py-2 text-right font-medium" scope="col">Attempts</th>
             </tr>
@@ -157,13 +162,12 @@ export function ProblemList({ onOpen, onSignIn }: ProblemListProps) {
                     <Status progress={p} />
                   </td>
                   <td className="py-2.5 text-ink">{s.title}</td>
-                  {/* Sorting is by difficulty alone, so the two interviews interleave.
-                      Without this column an Easy ML problem sits next to an Easy classic
-                      one and the first thing telling you which you opened is the stage
-                      count in the panel. */}
-                  <td className="py-2.5 text-sm text-ink-dim">
-                    {trackLabel(s.track)}
-                  </td>
+                  {/* Sorting is by difficulty alone, so on the All tab the two interviews
+                      interleave and an Easy ML problem sits next to an Easy classic one. Once a
+                      track is picked every row would say the same thing, so it goes. */}
+                  {filter === 'all' && (
+                    <td className="py-2.5 text-sm text-ink-dim">{trackLabel(s.track)}</td>
+                  )}
                   <td className={`py-2.5 text-sm capitalize ${DIFFICULTY_TEXT[s.difficulty]}`}>
                     {s.difficulty}
                   </td>

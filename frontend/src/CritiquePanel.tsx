@@ -170,8 +170,8 @@ function CritiquePanelInner({
           className="w-full resize-y rounded border border-line bg-page px-2 py-1.5 font-mono text-sm leading-relaxed text-ink"
         />
         <p className="mt-1.5 text-xs leading-relaxed text-ink-dim">
-          Requirements and back-of-the-envelope maths. The first two stages are graded on
-          this, not on the diagram.
+          How you have scoped the problem, and your numbers. The first two stages of
+          every interview are graded on these notes, not on the diagram.
         </p>
       </div>
 

@@ -1,4 +1,4 @@
-import { memo, useCallback } from 'react';
+import { memo, useCallback, useEffect } from 'react';
 import {
   addEdge,
   Background,
@@ -11,6 +11,7 @@ import {
   type EdgeChange,
   type NodeChange,
   type NodeProps,
+  useReactFlow,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
@@ -41,7 +42,28 @@ const ComponentNode = memo(ComponentNodeInner);
 // remount every node on every drag frame.
 const nodeTypes = { component: ComponentNode };
 
+/**
+ * Re-frames the diagram whenever `fitKey` changes.
+ *
+ * `fitView` on `<ReactFlow>` only runs on mount, and the canvas mounts empty — so opening a
+ * saved attempt drew its nodes wherever they were saved, usually half off-screen, and the
+ * first thing anyone did was hunt for the fit button. Keyed rather than keyed on the node
+ * count, because adding a first node by hand should not yank the viewport to it.
+ */
+function FitOnLoad({ fitKey }: { fitKey: number }) {
+  const { fitView } = useReactFlow();
+  useEffect(() => {
+    if (fitKey === 0) return;
+    // No need to wait for the new nodes to be measured: React Flow queues a `fitView`
+    // issued before then and runs it once they are, so calling it straight away is enough.
+    void fitView({ padding: 0.15, maxZoom: 1 });
+  }, [fitKey, fitView]);
+  return null;
+}
+
 interface CanvasProps {
+  /** Bump to re-frame the diagram, e.g. after loading a saved attempt. */
+  fitKey?: number;
   nodes: CanvasNode[];
   edges: CanvasEdge[];
   onNodesChange: (changes: NodeChange<CanvasNode>[]) => void;
@@ -51,6 +73,7 @@ interface CanvasProps {
 }
 
 export function Canvas({
+  fitKey = 0,
   nodes,
   edges,
   onNodesChange,
@@ -97,10 +120,16 @@ export function Canvas({
       onEdgeDoubleClick={labelEdge}
       deleteKeyCode={['Backspace', 'Delete']}
       fitView
+      // React Flow's default floor is 0.5. The canvas is the column left over after the
+      // sidebar and the critique panel, which on a laptop-width window is ~350px — and an
+      // eight-node ML diagram needs about 0.3 to fit in that. At 0.5 `fitView` was being
+      // clamped and a reopened attempt came back with both ends cut off.
+      minZoom={0.2}
       proOptions={{ hideAttribution: false }}
       className="bg-page"
     >
       <Background gap={20} />
+      <FitOnLoad fitKey={fitKey} />
       <Controls />
       {/* An empty canvas is the first thing anyone sees on a problem, and it used to say
           nothing at all — the only instructions were in the sidebar, which is not where
