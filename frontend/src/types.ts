@@ -13,7 +13,13 @@ export type NodeKind =
   | 'database'
   | 'cache'
   | 'queue'
-  | 'objectStore';
+  | 'objectStore'
+  | 'featureStore'
+  | 'modelServer'
+  | 'trainingJob'
+  | 'vectorStore'
+  | 'streamProcessor'
+  | 'dataLake';
 
 export interface TopologyNode {
   id: string;
@@ -39,6 +45,8 @@ export interface Scenario {
   id: string;
   title: string;
   prompt: string;
+  /** Which interview this problem runs. Decides the stage sequence, not just a filter. */
+  track: Track;
   difficulty: Difficulty;
   functional: string[];
   nonFunctional: string[];
@@ -55,32 +63,78 @@ export type Difficulty = 'easy' | 'medium' | 'hard';
 /** Mirror of `ScenarioProgress` in `backend/src/db.rs`. Absent means never attempted. */
 export interface ScenarioProgress {
   scenarioId: string;
-  /** All five stages were walked. Attendance, not quality. */
+  /** The interview was walked to its last stage, whichever track that is. Attendance, not quality. */
   solved: boolean;
   attempts: number;
   lastSeen: string;
 }
 
 /**
- * Mirror of `Stage` in `backend/src/critic.rs`. The interview runs one stage at a time.
- * Order here is the order they are walked in, and drives the progress indicator.
+ * Mirror of `Track` in `backend/src/scenarios.rs`. The label is not mirrored — it comes
+ * from `/api/tracks`, so there is one less string pair to keep in step.
  */
-export type Stage = 'requirements' | 'estimation' | 'highLevel' | 'deepDive' | 'bottlenecks';
+export type Track = 'classic' | 'ml';
 
-export const STAGES: { stage: Stage; label: string }[] = [
-  { stage: 'requirements', label: 'Requirements' },
-  { stage: 'estimation', label: 'Estimation' },
-  { stage: 'highLevel', label: 'High-level design' },
-  { stage: 'deepDive', label: 'Deep dive' },
-  { stage: 'bottlenecks', label: 'Bottlenecks' },
-];
+/**
+ * Mirror of `Stage` in `backend/src/critic.rs`. This is the union of every track's
+ * stages, not one sequence — `STAGES_BY_TRACK` says which of them an interview walks and
+ * in what order. `db::tests::every_stage_tag_is_pinned` is the authoritative list of tags;
+ * there is no test runner on this side, so a rename here fails silently.
+ */
+export type Stage =
+  | 'requirements'
+  | 'estimation'
+  | 'highLevel'
+  | 'deepDive'
+  | 'bottlenecks'
+  | 'dataAndFeatures'
+  | 'modeling'
+  | 'serving'
+  | 'evaluationAndMonitoring';
 
-export const stageIndex = (stage: Stage): number =>
-  STAGES.findIndex((s) => s.stage === stage);
+/**
+ * Mirror of `Track::stages` in `backend/src/scenarios.rs`. Order is the order they are
+ * walked in and drives the progress pips, so it is load-bearing rather than cosmetic.
+ * The two tracks are different lengths on purpose; nothing may assume five.
+ */
+export const STAGES_BY_TRACK: Record<Track, { stage: Stage; label: string }[]> = {
+  classic: [
+    { stage: 'requirements', label: 'Requirements' },
+    { stage: 'estimation', label: 'Estimation' },
+    { stage: 'highLevel', label: 'High-level design' },
+    { stage: 'deepDive', label: 'Deep dive' },
+    { stage: 'bottlenecks', label: 'Bottlenecks' },
+  ],
+  ml: [
+    { stage: 'requirements', label: 'Problem framing' },
+    { stage: 'estimation', label: 'Estimation' },
+    { stage: 'dataAndFeatures', label: 'Data and features' },
+    { stage: 'modeling', label: 'Modelling' },
+    { stage: 'serving', label: 'Serving' },
+    { stage: 'evaluationAndMonitoring', label: 'Evaluation and monitoring' },
+  ],
+};
 
-/** The stage after `stage`, or null at the end of the interview. */
-export const nextStage = (stage: Stage): Stage | null =>
-  STAGES[stageIndex(stage) + 1]?.stage ?? null;
+/** Defaults to the classic interview so a scenario that has not loaded yet still renders. */
+export const stagesFor = (track: Track | undefined): { stage: Stage; label: string }[] =>
+  STAGES_BY_TRACK[track ?? 'classic'];
+
+/** -1 when the stage belongs to another track. Callers must handle that. */
+export const stageIndex = (stage: Stage, track: Track | undefined): number =>
+  stagesFor(track).findIndex((s) => s.stage === stage);
+
+/** The stage after `stage` in this track, or null at the end of the interview. */
+export const nextStage = (stage: Stage, track: Track | undefined): Stage | null =>
+  stagesFor(track)[stageIndex(stage, track) + 1]?.stage ?? null;
+
+/** The stage every interview opens on. Shared by every track, which is what lets it be a constant. */
+export const FIRST_STAGE: Stage = 'requirements';
+
+/** Mirror of `TrackCard` in `backend/src/routes.rs`. */
+export interface TrackCard {
+  id: Track;
+  label: string;
+}
 
 /** Mirror of `Level` in `backend/src/scenarios.rs`. Selects how much rubric is in scope. */
 export type Level = 'junior' | 'senior' | 'staff';
@@ -124,6 +178,15 @@ export const NODE_KINDS: { kind: NodeKind; label: string; accent: string }[] = [
   { kind: 'cache', label: 'Cache', accent: '#f87171' },
   { kind: 'queue', label: 'Queue', accent: '#facc15' },
   { kind: 'objectStore', label: 'Object Store', accent: '#c084fc' },
+  // ponytail: fifteen categorical hues is past what anyone can hold apart at a glance.
+  // The accent is a hint; the label on the node is what identifies it. If the palette
+  // grows again, group by family rather than finding a sixteenth colour.
+  { kind: 'featureStore', label: 'Feature Store', accent: '#2dd4bf' },
+  { kind: 'modelServer', label: 'Model Server', accent: '#f472b6' },
+  { kind: 'trainingJob', label: 'Training Job', accent: '#a3e635' },
+  { kind: 'vectorStore', label: 'Vector Store', accent: '#60a5fa' },
+  { kind: 'streamProcessor', label: 'Stream Processor', accent: '#fb7185' },
+  { kind: 'dataLake', label: 'Data Lake', accent: '#a8a29e' },
 ];
 
 export const accentFor = (kind: NodeKind): string =>

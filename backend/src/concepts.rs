@@ -1,7 +1,7 @@
 //! The teaching material.
 //!
 //! The syllabus is not invented here — it is `scenarios.rs`. Every concept below exists
-//! because rubric lines across the twelve-plus scenarios keep asking for it, and each one
+//! because rubric lines across the scenario catalogue keep asking for it, and each one
 //! names the scenarios that exercise it. If a concept has no scenarios, it is not worth
 //! teaching in an interview trainer; if a rubric theme has no concept, that is the gap.
 //!
@@ -570,6 +570,256 @@ specific thing is unavailable'.",
         ],
         scenarios: &["url-shortener", "rate-limiter", "video-streaming", "news-feed", "key-value-store", "stock-exchange"],
     },
+    // --- machine learning ----------------------------------------------------
+    Concept {
+        id: "training-serving-skew",
+        title: "Training-serving skew",
+        summary: "A feature computed one way in training and another way at serving time.",
+        sections: &[
+            s(
+                "The shape of the bug",
+                "Your model trained on a feature called purchases_last_7d, computed by a nightly batch job over the warehouse. At serving time the same feature is read from a streaming counter that resets on deploy and counts a slightly different set of events. The model is now being asked about a number it has never seen. Nothing errors. Offline metrics are unchanged, because offline you recompute the batch version. The model is simply worse in production than it was in the notebook, and no single test fails.",
+            ),
+            s(
+                "Why it is the default outcome",
+                "Training reads history; serving reads now. History is a table you can join against at leisure, and now is a lookup you have eighty milliseconds for. Those two constraints push you toward two different implementations of the same idea, written by different people at different times, and the moment there are two implementations they begin to drift. The bug is not that someone was careless — it is that the system had two places to encode one definition.",
+            ),
+            s(
+                "Point-in-time correctness",
+                "The subtler version is time travel. When you build a training row for a transaction at 10:03, every feature must be as of 10:03 — not as of when the job ran. A naive join against a current aggregates table leaks the future into the past: the model learns from a 'transactions in the last hour' count that already includes the transaction it is being asked to score. Offline results look extraordinary. Production results do not.",
+            ),
+            s(
+                "What actually fixes it",
+                "One definition, computed once, read by both paths — which is what a feature store is for. Failing that: log the exact feature vector that was served, and train on those logged vectors rather than recomputing from the warehouse. That turns the question from 'are these two implementations the same?' into 'is this the row we served?', which is a question you can answer.",
+            ),
+        ],
+        probes: &[
+            "Point at one feature on your diagram and walk me through how it is computed in training, then how it is computed at serving time.",
+            "Your model uses a count over the last hour. When you build a training row for an event at 10:03, what window does that count cover?",
+            "How would you find out that a feature had silently changed definition three weeks ago?",
+        ],
+        scenarios: &["feed-ranking", "fraud-detection", "realtime-personalisation", "ad-click-prediction"],
+    },
+    Concept {
+        id: "feature-stores",
+        title: "Feature stores",
+        summary: "One definition of a feature, served to training and to inference alike.",
+        sections: &[
+            s(
+                "What it is for",
+                "A feature store exists to make one claim true: the number the model trained on and the number the model is served are produced by the same code. It does that by owning the definition, materialising it into an offline table for training and an online key-value store for serving, and refusing to let anyone compute it a third way. Everything else it does — discovery, sharing, versioning — is secondary to that one guarantee.",
+            ),
+            s(
+                "The two halves have different jobs",
+                "The offline half is a warehouse table optimised for large point-in-time joins: give me every feature as of this timestamp, for ten million rows. The online half is a single-digit-millisecond lookup by entity key, for one row. They hold the same values and almost nothing else in common, which is why the two are usually different systems with a pipeline between them, and why the lag of that pipeline is a number worth knowing.",
+            ),
+            s(
+                "When you do not need one",
+                "If every feature is computed from the request itself, there is no skew to prevent and a feature store is infrastructure you are running for nothing. The cost only starts to pay when features are aggregates over history, shared between models, or computed by a pipeline that is not the serving path. Reaching for one on a design that has three request-derived features is a signal you are describing a stack rather than solving a problem.",
+            ),
+            s(
+                "Freshness is the design decision",
+                "Every feature has a staleness budget and they are not the same. A user's lifetime purchase count can be a day old. Their count of items viewed in this session cannot be a minute old. Sorting features by how stale they are allowed to be tells you which need a streaming path and which can ride a nightly batch — and that split, not the store itself, is the part an interviewer is listening for.",
+            ),
+        ],
+        probes: &[
+            "Which of your features can be a day stale, and which cannot survive being a minute old?",
+            "What happens to a prediction when the online feature lookup times out?",
+            "How does a feature get from the streaming pipeline into the table you train on?",
+        ],
+        scenarios: &["product-recommender", "fraud-detection", "realtime-personalisation", "feed-ranking"],
+    },
+    Concept {
+        id: "offline-vs-online-evaluation",
+        title: "Offline and online evaluation",
+        summary: "Why the metric that improved is not the metric anyone cared about.",
+        sections: &[
+            s(
+                "Two different questions",
+                "Offline evaluation asks: on data I already have, does this model rank better than that one? Online evaluation asks: when real people are shown this, does the thing we want to happen happen more often? They are related by assumption, not by arithmetic. Every offline metric is a proxy, and the entire craft is knowing how far you can trust yours before you have to go and find out.",
+            ),
+            s(
+                "The gap has a cause",
+                "Offline data was collected under the old model. It contains the items the old model chose to show, judged by people who were shown them in the old model's order. A new model that would surface something better gets no credit offline, because nobody ever clicked a thing they never saw. This is why offline NDCG can climb for a quarter while the online metric sits flat: you are getting better at reproducing the logs, which is not the job.",
+            ),
+            s(
+                "Choosing the offline metric",
+                "Pick the one whose failure mode you can live with. Accuracy is meaningless under class imbalance. AUC measures ranking and says nothing about whether the numbers are calibrated, which matters the moment the output is multiplied by money. NDCG cares about order near the top, which is right for search and wrong for a queue that a human works through exhaustively. Say which one, and say why it is the right proxy for this problem.",
+            ),
+            s(
+                "The online half",
+                "An A/B test is the arbiter, and it has its own traps: an effect too small for your traffic to resolve, a metric that moves because a bug shipped alongside, a novelty bump that decays over two weeks. Decide the metric, the minimum effect worth shipping, and the duration before you start. A test you stop when it looks good is not a test.",
+            ),
+        ],
+        probes: &[
+            "Which offline metric are you optimising, and what would make it disagree with your online metric?",
+            "Your offline number improved by 4% and the A/B test is flat. Where do you look first?",
+            "How long does your experiment run, and who decided that before it started?",
+        ],
+        scenarios: &[
+            "search-ranking",
+            "feed-ranking",
+            "ad-click-prediction",
+            "product-recommender",
+            "content-moderation",
+        ],
+    },
+    Concept {
+        id: "embeddings-and-vector-search",
+        title: "Embeddings and vector search",
+        summary: "Turning things into vectors so that near means similar, and finding the near ones fast.",
+        sections: &[
+            s(
+                "What an embedding buys",
+                "An embedding maps an item into a vector where distance means something — that two documents are about the same subject, that two products get bought by the same people. Once you have that, 'find me similar things' becomes a geometry problem instead of a keyword problem, which is what lets you retrieve for a query whose exact words appear nowhere in the corpus. What you lose is exactness: the space encodes whatever the training objective rewarded, and nothing else.",
+            ),
+            s(
+                "Approximate is the whole point",
+                "Exact nearest-neighbour search over ten million vectors is a full scan, and the cost is the same for every query. Approximate indexes — HNSW, IVF, product quantisation — trade a recall guarantee for orders of magnitude of speed. The number that matters is recall at your k: what fraction of the true top ten does the index actually return? An ANN index is a tunable, and shipping one without knowing its recall is shipping an unknown amount of silent loss.",
+            ),
+            s(
+                "Rebuilding is the operational problem",
+                "Embeddings come from a model. Change the model and every vector in the index is in a different space and meaningless against the old ones — there is no incremental migration, only a full re-embed and a swap. Meanwhile new items arrive continuously and must be added to an index that some structures do not cheaply support inserting into. Say how a new item becomes searchable, and say what happens on the day the embedding model changes.",
+            ),
+            s(
+                "Where the filter goes",
+                "Real queries are never just similarity. They are similarity plus in-stock, plus in this region, plus this user is allowed to see it. Filtering after retrieval can empty your result set; filtering before it can defeat the index. Which way round you do it, and what happens when the filter is very selective, is usually the most interesting question about a vector search design.",
+            ),
+        ],
+        probes: &[
+            "What is your index's recall at ten, and how do you know?",
+            "You retrain the embedding model. Walk me through the rollout.",
+            "A user can only see documents their team owns. Where does that filter apply?",
+        ],
+        scenarios: &["rag-over-docs", "search-ranking", "product-recommender", "realtime-personalisation"],
+    },
+    Concept {
+        id: "retrieval-and-ranking",
+        title: "Retrieval then ranking",
+        summary: "Two stages with different costs, because you cannot afford the good model on everything.",
+        sections: &[
+            s(
+                "Why it is always two stages",
+                "You have ten million candidates and eighty milliseconds. The model that ranks well enough to matter costs a millisecond per item. The arithmetic does not work, and no amount of hardware makes it work. So retrieval cuts ten million to a few hundred using something cheap and recall-oriented, and ranking spends the real budget on those few hundred. Any design that scores the whole corpus per request has not met the latency requirement yet.",
+            ),
+            s(
+                "The two stages are optimised for different things",
+                "Retrieval is judged on recall: did the good answer survive into the candidate set? Its precision barely matters, because ranking will sort it out. Ranking is judged on the order of the top few, and its recall is irrelevant because it never sees what retrieval dropped. Conflating the two — tuning retrieval on NDCG, or worrying about a ranker's recall — is a common and telling mistake.",
+            ),
+            s(
+                "Retrieval's ceiling is the system's ceiling",
+                "Nothing ranking does can recover an item retrieval dropped. That makes retrieval recall the hard cap on the whole system's quality, and it is the number to measure first when the end-to-end result disappoints. It is also why retrieval is usually several sources unioned together — an ANN index, a keyword index, a freshness feed, a hand-curated list — rather than one clever method.",
+            ),
+            s(
+                "Where a third stage appears",
+                "Large systems often add a cheap pre-ranker between the two, cutting thousands to hundreds so the expensive model sees fewer. And a final re-ranking pass over the top handful, for diversity or business rules, is common and belongs after scoring rather than inside it. Mixing business rules into the model's objective is how a score stops meaning anything.",
+            ),
+        ],
+        probes: &[
+            "How many candidates does retrieval return, and what does that number cost you?",
+            "What is your retrieval recall, and what is the ceiling it puts on the whole system?",
+            "Where do the business rules apply — inside the model or after it?",
+        ],
+        scenarios: &["search-ranking", "feed-ranking", "product-recommender", "rag-over-docs"],
+    },
+    Concept {
+        id: "drift-and-feedback-loops",
+        title: "Drift and feedback loops",
+        summary: "The world moves, and worse, your own model moves it.",
+        sections: &[
+            s(
+                "Three things that drift",
+                "The inputs change — a new device, a new country, a new referral source, and suddenly a quarter of your traffic looks unlike anything in training. The relationship changes — the same inputs now imply a different answer, which is what happens when an adversary adapts. And the labels change, because the humans or the process producing them changed. They need different detection and different responses, and a design that says 'we monitor for drift' without saying which kind has not said anything.",
+            ),
+            s(
+                "Detecting it without labels",
+                "The honest problem is that you usually cannot measure accuracy in production, because the label arrives days later or never. So you watch what you can: the distribution of each input feature against training, the distribution of the model's own output scores, and the rate at which predictions fall near the decision threshold. A sudden shift in the score distribution is the earliest signal you get, and it costs nothing to log.",
+            ),
+            s(
+                "The loop is the dangerous one",
+                "A recommender shows what it predicts you will click. You click it. That becomes training data. Tomorrow it is more sure. What it never showed you, it never learns about, and the catalogue it draws from silently contracts around what was already popular. The same shape appears in spam — blocked messages are never reported, so the training set loses exactly the examples the model is best at catching, and its measured performance improves while the real thing rots.",
+            ),
+            s(
+                "What breaks the loop",
+                "Deliberate exploration: reserve some fraction of traffic for items the model is unsure about, and accept the cost as the price of still having a usable training set next year. Log what you showed and not only what was clicked, so you can tell 'not chosen' from 'never offered'. And hold out a small unbiased slice — a random ordering shown to a tiny share of traffic — which is the only data that tells you what your model is doing to the world rather than what the world is doing back.",
+            ),
+        ],
+        probes: &[
+            "You cannot see labels for two weeks. What tells you today that the model is degrading?",
+            "What in this design ever shows a user something the model did not rank highly?",
+            "Your measured precision is rising and complaints are rising too. Explain that.",
+        ],
+        scenarios: &[
+            "spam-classifier",
+            "content-moderation",
+            "feed-ranking",
+            "product-recommender",
+            "realtime-personalisation",
+            "fraud-detection",
+        ],
+    },
+    Concept {
+        id: "retrieval-augmented-generation",
+        title: "Retrieval-augmented generation",
+        summary: "Giving a language model the passages it needs, and knowing when it did not get them.",
+        sections: &[
+            s(
+                "What RAG actually is",
+                "Retrieve passages relevant to the question, put them in the prompt, ask the model to answer from them. That is the whole mechanism. It exists because a model's weights are fixed at training time and your documents are not, and because a cited passage is checkable in a way a model's recollection is not. It is a retrieval system with a generator on the end, and most of what goes wrong with it goes wrong in the retrieval half.",
+            ),
+            s(
+                "Chunking is a real decision",
+                "You index pieces of documents, and the piece size is a trade-off nobody can avoid. Too small and a chunk loses the context that made it meaningful — a paragraph of pronouns whose subject was two paragraphs up. Too large and the embedding averages several topics into a vector that is near nothing, while the chunk eats context window. Overlapping windows and splitting on real structure, such as headings, both beat splitting every five hundred characters, and saying so is the difference between having thought about it and not.",
+            ),
+            s(
+                "Evaluate the halves separately",
+                "When an answer is wrong, there are two very different causes: the right passage was never retrieved, or it was retrieved and the model answered badly anyway. These need different fixes, and one end-to-end quality number tells you nothing about which you have. Measure retrieval by whether the passage containing the answer made the top k, and generation by whether the answer follows from what was supplied. Teams that only measure the end result spend months tuning prompts when their recall at five was sixty percent.",
+            ),
+            s(
+                "Permissions and refusal",
+                "Two failure modes carry real consequences. Access control belongs in the retrieval query, as a filter applied before anything reaches the prompt — instructing a model not to reveal what you have already handed it is not a security boundary. And the system needs a way to decline: a retrieval score floor under which it says it does not know, because an answer confidently assembled from three irrelevant passages is worse than no answer and much harder to catch.",
+            ),
+        ],
+        probes: &[
+            "The answer was wrong. How do you tell whether retrieval or generation failed?",
+            "Where is the permission check, relative to the prompt?",
+            "What does this system do when nothing relevant is retrieved?",
+        ],
+        scenarios: &["rag-over-docs", "llm-serving", "search-ranking"],
+    },
+    Concept {
+        id: "serving-large-models",
+        title: "Serving large models",
+        summary: "What inference costs when the hardware is rented by the hour and the answer arrives one token at a time.",
+        sections: &[
+            s(
+                "Two phases, two bottlenecks",
+                "Generating an answer is not one operation. Prefill reads the whole prompt at once and is compute-bound — it is a big matrix multiply and the GPU is busy. Decode then emits one token at a time, each pass reading the entire model's weights to produce a single token, which makes it memory-bandwidth-bound and leaves the compute mostly idle. Time to first token is a prefill problem. Tokens per second is a decode problem. Optimising one does nothing for the other, and a design that quotes a single latency number has not noticed there are two.",
+            ),
+            s(
+                "Batching is not the batching you know",
+                "Ordinary request batching waits for a few requests, runs them together, returns them together. That is wrong here, because requests finish at wildly different lengths and the short ones would wait on the long ones. Continuous batching instead admits new requests into the running batch every step and evicts finished ones, keeping the GPU full without coupling one user's latency to another's output length. The word is the same; the mechanism is not, and the difference is most of the throughput.",
+            ),
+            s(
+                "The KV cache is the capacity limit",
+                "Every token generated must attend to every token before it, so the model keeps their intermediate keys and values in GPU memory. That cache grows with sequence length and with every concurrent request, and it is usually what runs out first — long before compute does. Concurrency is therefore a memory question: how many sequences of what length fit in what is left after the weights. This is the number that decides how many requests one GPU serves, and a capacity estimate that reasons from FLOPs instead is answering a question nobody asked.",
+            ),
+            s(
+                "Spending less per token",
+                "Quantisation stores weights at lower precision, which shrinks both the memory the weights occupy and the bandwidth each decode step must read — the most direct lever there is, paid for in some quality that has to be measured rather than assumed. Routing is the other: send the easy majority to a small model and escalate only what needs the large one, which works exactly as well as your ability to tell which is which in advance. Both are real; neither is free, and saying which you would try first and how you would know it worked is the answer.",
+            ),
+            s(
+                "Scaling something that takes minutes to start",
+                "Loading tens of gigabytes of weights onto a fresh GPU is minutes, not seconds, and the instances may not be available when you ask. Autoscaling on current load therefore arrives late for every burst. What is left is holding warm capacity you are paying for, queueing with an admission policy and an honest error when the queue is too long, and degrading deliberately — a shorter output cap, a smaller model — rather than timing out. A design that says it will scale up on demand has not priced the demand.",
+            ),
+        ],
+        probes: &[
+            "Your p99 time-to-first-token regressed but tokens-per-second is unchanged. Which half of the system do you look at?",
+            "How many concurrent requests fit on one GPU, and what did you compute that from?",
+            "Traffic triples in ninety seconds and a new instance takes four minutes to load. What does the user see?",
+        ],
+        scenarios: &["llm-serving", "rag-over-docs", "realtime-personalisation"],
+    },
 ];
 
 #[cfg(test)]
@@ -611,6 +861,11 @@ mod tests {
 
     #[test]
     fn the_hardest_scenarios_have_something_to_read() {
+        // Note the floor: this asserts a Hard scenario is *named* by some concept, not that
+        // the concept answers its rubric. `llm-serving` passed this on a retrieval article
+        // while nothing taught prefill, batching or the KV cache. A test cannot check that;
+        // the reason this one earns its place is that it fails loudly for a whole missing
+        // area, which is the failure worth automating.
         // The point of the section is that a critique you did not understand has somewhere
         // to send you. A Hard problem with no concepts attached is a dead end.
         for s in scenarios::SCENARIOS {

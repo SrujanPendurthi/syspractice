@@ -21,7 +21,7 @@ use sqlx::SqlitePool;
 use crate::auth::{self, AuthUser, MaybeUser, Throttle};
 use crate::critic::Stage;
 use crate::error::AppError;
-use crate::scenarios::Level;
+use crate::scenarios::{Level, Scenario, Track};
 use crate::topology::Topology;
 use crate::{concepts, critic, db, scenarios};
 
@@ -74,6 +74,7 @@ pub fn router(state: AppState) -> Router {
     // parse as JSON — a renamed route fails as an opaque SyntaxError instead of a 404.
     let api = Router::new()
         .route("/scenarios", get(list_scenarios))
+        .route("/tracks", get(list_tracks))
         .route("/progress", get(list_progress))
         .route("/attempts", get(list_attempts).post(create_attempt))
         .route("/attempts/{id}", get(get_attempt).put(update_attempt))
@@ -108,6 +109,27 @@ async fn list_scenarios() -> impl IntoResponse {
     Json(scenarios::SCENARIOS)
 }
 
+/// The tracks, with their display names.
+///
+/// Served rather than mirrored. `Track` itself has to exist on both sides because it is on
+/// every scenario, but its label is only ever rendered — putting it here means one fewer
+/// string pair to keep in step across the language boundary, which is the whole complaint
+/// that the hand-mirroring note in CLAUDE.md is about.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrackCard {
+    id: Track,
+    label: &'static str,
+}
+
+async fn list_tracks() -> impl IntoResponse {
+    let cards: Vec<TrackCard> = scenarios::Track::ALL
+        .iter()
+        .map(|t| TrackCard { id: *t, label: t.label() })
+        .collect();
+    Json(cards)
+}
+
 /// Anonymous visitors get an empty list rather than a 401. The problem list is the
 /// landing page, and it should render for someone who has never signed in.
 async fn list_progress(
@@ -140,8 +162,22 @@ struct CreateAttempt {
 }
 
 /// An attempt that arrives without a stage is one that has not started the interview.
+/// Shared by every track, which is what lets this stay a plain serde default.
 fn first_stage() -> Stage {
     Stage::Requirements
+}
+
+/// Refuses a stage that belongs to a different interview than the problem does.
+///
+/// Without it a client posts `stage: "evaluationAndMonitoring"` against a classic scenario
+/// and the problem shows as solved without a single stage having been walked — `solved` is
+/// "reached a terminal stage", and nothing else was checking that the stage was one this
+/// problem could reach.
+fn check_stage(scenario: &Scenario, stage: Stage) -> Result<(), AppError> {
+    if scenario.track.position(stage).is_none() {
+        return Err(AppError::Invalid("that stage is not part of this problem's interview"));
+    }
+    Ok(())
 }
 
 /// Roughly two thousand tokens of prose, which is far more than requirements and
@@ -179,7 +215,8 @@ async fn create_attempt(
     check_notes(&body.notes)?;
     // Without this a client can write attempts against scenario ids that do not exist,
     // which show up in its own progress as solved problems that are not problems.
-    scenarios::find(&body.scenario_id).ok_or(AppError::NotFound)?;
+    let scenario = scenarios::find(&body.scenario_id).ok_or(AppError::NotFound)?;
+    check_stage(scenario, body.stage)?;
 
     let id = db::create_attempt(
         &s.pool,
@@ -208,6 +245,12 @@ async fn update_attempt(
     AppJson(body): AppJson<UpdateAttempt>,
 ) -> Result<impl IntoResponse, AppError> {
     check_notes(&body.notes)?;
+    // The stage has to be checked against the problem this attempt is already against,
+    // not one the caller names — otherwise the check is the caller's to pass or skip.
+    let scenario_id = db::attempt_scenario(&s.pool, user.id, id).await?;
+    let scenario = scenarios::find(&scenario_id).ok_or(AppError::NotFound)?;
+    check_stage(scenario, body.stage)?;
+
     db::update_attempt(&s.pool, user.id, id, &body.topology, &body.notes, body.stage).await?;
     Ok(Json(json!({ "id": id })))
 }
@@ -236,6 +279,7 @@ async fn critique(
 ) -> Result<impl IntoResponse, AppError> {
     let scenario = scenarios::find(&body.scenario_id).ok_or(AppError::NotFound)?;
     check_notes(&body.notes)?;
+    check_stage(scenario, body.stage)?;
 
     // Claimed up front and in one statement, so concurrent requests cannot each read the
     // same under-limit count and all go through. Released below if the runner never ran.
@@ -243,7 +287,7 @@ async fn critique(
         .await?
         .ok_or(AppError::QuotaExceeded(s.critique_quota))?;
 
-    let system = critic::system_prompt(body.level, body.stage);
+    let system = critic::system_prompt(scenario.track, body.level, body.stage);
     let prompt = critic::build_prompt(scenario, &body.topology, &body.notes, body.level);
 
     let stream = match critic::stream_critique(&s.runner_url, &s.model, system, prompt).await {
@@ -561,13 +605,17 @@ async fn submit_match(
     // The attempt is written first: a saved board that failed to attach to a match is a
     // recoverable annoyance, whereas a match pointing at an attempt that was never stored
     // is a match that cannot be graded.
+    // A submitted board has finished its interview, so it is stamped with whatever
+    // finishing means for *its* track. Hard-coding `Bottlenecks` here stamped an ML board
+    // with a stage its own interview never walks, leaving it permanently unfinished.
+    let scenario = scenarios::find(&m.scenario_id).ok_or(AppError::NotFound)?;
     let attempt = db::create_attempt(
         &s.pool,
         user.id,
         &m.scenario_id,
         &body.topology,
         &body.notes,
-        Stage::Bottlenecks,
+        scenario.track.terminal(),
     )
     .await?;
 

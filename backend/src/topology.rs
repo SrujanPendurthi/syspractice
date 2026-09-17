@@ -17,6 +17,15 @@ pub enum NodeKind {
     Cache,
     Queue,
     ObjectStore,
+    // Machine learning. Available on every problem rather than filtered by track — a
+    // classic design may legitimately want a stream processor, and a palette that hides
+    // components is a filter that buys nothing.
+    FeatureStore,
+    ModelServer,
+    TrainingJob,
+    VectorStore,
+    StreamProcessor,
+    DataLake,
 }
 
 impl NodeKind {
@@ -33,6 +42,12 @@ impl NodeKind {
             NodeKind::Cache => "cache",
             NodeKind::Queue => "message queue",
             NodeKind::ObjectStore => "object store",
+            NodeKind::FeatureStore => "feature store",
+            NodeKind::ModelServer => "model server",
+            NodeKind::TrainingJob => "training pipeline",
+            NodeKind::VectorStore => "vector store",
+            NodeKind::StreamProcessor => "stream processor",
+            NodeKind::DataLake => "data lake",
         }
     }
 }
@@ -123,6 +138,41 @@ mod tests {
                 target: "n2".into(),
                 label: Some("HTTP".into()),
             }],
+        }
+    }
+
+    /// Every kind, so a Rust-side rename fails here. The TS union is mirrored by hand and
+    /// a rename there fails silently, which is exactly why this list has to be complete
+    /// rather than a single representative variant.
+    const EVERY_KIND: &[(NodeKind, &str, &str)] = &[
+        (NodeKind::Client, "client", "client"),
+        (NodeKind::Cdn, "cdn", "CDN"),
+        (NodeKind::LoadBalancer, "loadBalancer", "load balancer"),
+        (NodeKind::ApiGateway, "apiGateway", "API gateway"),
+        (NodeKind::Service, "service", "service"),
+        (NodeKind::Database, "database", "database"),
+        (NodeKind::Cache, "cache", "cache"),
+        (NodeKind::Queue, "queue", "message queue"),
+        (NodeKind::ObjectStore, "objectStore", "object store"),
+        (NodeKind::FeatureStore, "featureStore", "feature store"),
+        (NodeKind::ModelServer, "modelServer", "model server"),
+        (NodeKind::TrainingJob, "trainingJob", "training pipeline"),
+        (NodeKind::VectorStore, "vectorStore", "vector store"),
+        (NodeKind::StreamProcessor, "streamProcessor", "stream processor"),
+        (NodeKind::DataLake, "dataLake", "data lake"),
+    ];
+
+    #[test]
+    fn every_kind_keeps_its_wire_format_and_its_name() {
+        for (kind, tag, described) in EVERY_KIND {
+            let json = serde_json::to_string(kind).expect("a kind always serializes");
+            assert_eq!(json, format!("\"{tag}\""), "{kind:?} changed its wire format");
+
+            let back: NodeKind = serde_json::from_str(&json).expect("and always parses back");
+            assert_eq!(back, *kind);
+
+            // The prompt name is deliberately not the serde tag, so it needs its own guard.
+            assert_eq!(kind.describe(), *described, "{kind:?} changed how the critic reads it");
         }
     }
 

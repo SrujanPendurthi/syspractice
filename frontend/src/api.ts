@@ -9,6 +9,7 @@ import type {
   PostSummary,
   Scenario,
   ScenarioProgress,
+  TrackCard,
   Stage,
   Topology,
   User,
@@ -47,6 +48,9 @@ const post = (url: string, body?: unknown) =>
   });
 
 export const listScenarios = () => send('/api/scenarios').then(json<Scenario[]>);
+
+/** Track labels live on the server so they are not a second thing to keep mirrored. */
+export const listTracks = () => send('/api/tracks').then(json<TrackCard[]>);
 
 export const listProgress = () => send('/api/progress').then(json<ScenarioProgress[]>);
 

@@ -8,6 +8,7 @@ import { MatchPanel } from './MatchPanel';
 import { listAttempts, listConcepts, listScenarios, loadAttempt, saveAttempt, updateAttempt, Unauthorized } from './api';
 import { useAuth } from './useAuth';
 import {
+  FIRST_STAGE,
   fromTopology,
   LEVELS,
   NODE_KINDS,
@@ -63,7 +64,7 @@ export function Workspace({ scenarioId, onBack, matchId, level: fixedLevel }: Wo
   const [attemptId, setAttemptId] = useState<number | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [notes, setNotes] = useState('');
-  const [stage, setStage] = useState<Stage>('requirements');
+  const [stage, setStage] = useState<Stage>(FIRST_STAGE);
   const [level, setLevel] = useState<Level>(fixedLevel ?? 'senior');
 
   const [nodes, setNodes, onNodesChange] = useNodesState<CanvasNode>([]);
@@ -202,7 +203,7 @@ export function Workspace({ scenarioId, onBack, matchId, level: fixedLevel }: Wo
     setNodes([]);
     setEdges([]);
     setNotes('');
-    setStage('requirements');
+    setStage(FIRST_STAGE);
     setAttemptId(null);
     setStatus(null);
   };
@@ -298,7 +299,7 @@ export function Workspace({ scenarioId, onBack, matchId, level: fixedLevel }: Wo
         </Section>
 
         <Section title="Components">
-          <div className="grid grid-cols-2 gap-1">
+          <div className="grid grid-cols-3 gap-1">
             {NODE_KINDS.map(({ kind, label, accent }) => (
               <button
                 key={kind}
@@ -381,6 +382,7 @@ export function Workspace({ scenarioId, onBack, matchId, level: fixedLevel }: Wo
         scenario && (
         <CritiquePanel
           scenarioId={scenario.id}
+          track={scenario.track}
           stage={stage}
           level={level}
           onAdvance={advance}

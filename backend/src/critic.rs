@@ -10,65 +10,163 @@ use serde_json::json;
 use std::convert::Infallible;
 
 use crate::error::AppError;
-use crate::scenarios::{Level, Scenario};
+use crate::scenarios::{Level, Scenario, Track};
 use crate::topology::Topology;
 
 /// A stage of the interview. The critic grades one at a time — asking a 2.5B model to
 /// cover requirements, math, structure and failure modes at once reliably drops one of
 /// them, and a single-stage answer is short enough to run while the candidate is still
 /// drawing.
+///
+/// This is the union of every track's stages, not one sequence. `Track::stages` says
+/// which of them a given interview walks and in what order; nothing here implies an
+/// ordering, and a stage belongs to exactly one track apart from the two shared openers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Stage {
+    // Shared by every track.
     Requirements,
     Estimation,
+    // Classic.
     HighLevel,
     DeepDive,
     Bottlenecks,
+    // Machine learning.
+    DataAndFeatures,
+    Modeling,
+    Serving,
+    EvaluationAndMonitoring,
 }
 
 impl Stage {
+    /// The stage's name, for the prompt's own heading.
+    fn heading(self) -> &'static str {
+        match self {
+            Stage::Requirements => "REQUIREMENTS",
+            Stage::Estimation => "ESTIMATION",
+            Stage::HighLevel => "HIGH-LEVEL DESIGN",
+            Stage::DeepDive => "DEEP DIVE",
+            Stage::Bottlenecks => "BOTTLENECKS AND TRADE-OFFS",
+            Stage::DataAndFeatures => "DATA AND FEATURES",
+            Stage::Modeling => "MODELLING",
+            Stage::Serving => "SERVING",
+            Stage::EvaluationAndMonitoring => "EVALUATION AND MONITORING",
+        }
+    }
+
     /// What to grade, and what to explicitly leave alone. The "ignore" half matters as
     /// much as the "grade" half: without it the model drifts back to reviewing the whole
     /// design at every stage.
-    fn focus(self) -> &'static str {
-        match self {
-            Stage::Requirements => "\
-STAGE 1 of 5 — REQUIREMENTS. Grade only whether they have scoped the problem: which \
-features are in and out, who the users are, what they have chosen NOT to build. Their \
-notes are the answer here; the diagram is not. Do not comment on components or scale yet.",
+    ///
+    /// Takes the track because `Requirements` and `Estimation` are walked by both and mean
+    /// different things in each — scoping a service is not framing a prediction task, and
+    /// sizing a cache is not sizing a training set.
+    ///
+    /// Those two are spelled out for every track rather than given a fallback arm. A
+    /// wildcard would compile, and a third track would silently inherit the
+    /// distributed-systems briefing for its first two stages; this way adding one fails
+    /// here until somebody writes its text. The stages that belong to a single track keep
+    /// their `_`, because there is nothing for another track to get wrong.
+    fn focus(self, track: Track) -> &'static str {
+        match (track, self) {
+            (Track::Ml, Stage::Requirements) => "\
+Grade only whether they have framed the prediction problem. What exactly is being \
+predicted, for whom, and at what moment? What is the label, and where does it come from — \
+is it logged, inferred, or does somebody have to label it by hand? Which online metric \
+does the business actually care about? Push hard on one thing: what is the non-ML \
+baseline, and why is it not enough? A design that cannot say why a heuristic loses has \
+not justified the model. Their notes are the answer here; the diagram is not. Say nothing \
+about features, model architecture or serving.",
+
+            (Track::Ml, Stage::Estimation) => "\
+Grade only the arithmetic in their notes: how many labelled examples exist and how fast \
+they arrive, the storage for features and embeddings, inference queries per second, and \
+what the model costs to serve.
+
+Before you write anything, recompute every number they claim, yourself, from their own \
+assumptions. Do not accept a stated result because it looks plausible. State your figure \
+next to theirs. Watch the unit: a slip between GB and TB, or per-day and per-second, is \
+the most common error here and you must catch it. Watch two more that are specific to \
+this: a training set counted in rows when the cost is driven by tokens or by images, and \
+an inference budget quoted per request when the hardware is billed per GPU-hour. An \
+absent number is also a finding. Do not review the diagram's structure.",
+
+            (_, Stage::DataAndFeatures) => "\
+Grade only the data. Where does each feature come from, how is it computed, and — the \
+question that matters most — is it computed the same way at training time and at serving \
+time? Name any feature that could not actually be known at prediction time; that is \
+leakage and it is the single most common way one of these designs is quietly wrong. Ask \
+how the training set is sampled, how class imbalance is handled, and what happens to a \
+user or item seen for the first time. Ignore the model architecture entirely.",
+
+            (_, Stage::Modeling) => "\
+Grade only the model choice and how it is trained. Does the model suit the data they \
+have, rather than the data they wish they had? Push on the simplest thing that could \
+work first. Ask how often it is retrained and what triggers that. If the design retrieves \
+and then ranks, check that the two stages have different jobs and different costs. Ignore \
+serving infrastructure and monitoring.",
+
+            (_, Stage::Serving) => "\
+Grade only how a prediction reaches the caller. Is scoring done ahead of time or on the \
+request path, and does the latency budget survive it? Where do features come from at \
+serving time, and what happens when that lookup is slow or empty? Ask about batching, \
+caching of predictions, and what is served while the model is being swapped. A design \
+with no answer for the first request after a deploy has not finished. Ignore how the \
+model was trained.",
+
+            (_, Stage::EvaluationAndMonitoring) => "\
+Grade only what happens after it ships. Which offline metric did they choose and why is \
+it a reasonable stand-in for the online one — and what would make the two disagree? How \
+is the change actually measured on real traffic? Then the failure modes specific to this \
+kind of system: input drift, label drift, and the feedback loop where the model's own \
+output becomes its next training set and quietly narrows what it will ever recommend. \
+Assume the serving path already works.",
+
+            (Track::Classic, Stage::Requirements) => "\
+Grade only whether they have scoped the problem: which features are in and out, who the \
+users are, what they have chosen NOT to build. Their notes are the answer here; the \
+diagram is not. Do not comment on components or scale yet.",
+
             // "Check their maths" is not enough on its own: both a 2.5B and a 12B will
             // read a stated result and agree with it. They have to be told to recompute
             // from the inputs before they are allowed to judge, and told that the unit is
             // where the error usually hides.
-            Stage::Estimation => "\
-STAGE 2 of 5 — ESTIMATION. Grade only the arithmetic in their notes: QPS, storage, \
-bandwidth, and whether those numbers follow from the stated requirements.
+            (Track::Classic, Stage::Estimation) => "\
+Grade only the arithmetic in their notes: QPS, storage, bandwidth, and whether those \
+numbers follow from the stated requirements.
 
 Before you write anything, recompute every number they claim, yourself, from their own \
 assumptions. Do not accept a stated result because it looks plausible — derive it again \
 and compare. State your figure next to theirs. Check the unit especially: a slip between \
 GB and TB, or per-day and per-second, is the most common error here and you must catch \
 it. An absent number is also a finding. Do not review the diagram's structure.",
-            Stage::HighLevel => "\
-STAGE 3 of 5 — HIGH-LEVEL DESIGN. Grade only the shape of the diagram: are the major \
-components present, does the request path make sense end to end, is the data flow \
-coherent. Stay out of the internals of any single component.",
-            Stage::DeepDive => "\
-STAGE 4 of 5 — DEEP DIVE. Pick the single most interesting component on their diagram \
-and go deep on it alone: its data model, its interface, how it scales. Ignore every \
-other part of the design.",
-            Stage::Bottlenecks => "\
-STAGE 5 of 5 — BOTTLENECKS AND TRADE-OFFS. Grade only what breaks: single points of \
-failure, what saturates first under the stated load, and the trade-off they made without \
-naming it. Assume the happy path already works.",
+
+            (_, Stage::HighLevel) => "\
+Grade only the shape of the diagram: are the major components present, does the request \
+path make sense end to end, is the data flow coherent. Stay out of the internals of any \
+single component.",
+
+            (_, Stage::DeepDive) => "\
+Pick the single most interesting component on their diagram and go deep on it alone: its \
+data model, its interface, how it scales. Ignore every other part of the design.",
+
+            (_, Stage::Bottlenecks) => "\
+Grade only what breaks: single points of failure, what saturates first under the stated \
+load, and the trade-off they made without naming it. Assume the happy path already works.",
         }
     }
 }
 
-/// The interviewer's standing rules. Constant across stages and levels — the parts that
-/// vary are appended by `system_prompt`.
-const RULES: &str = "\
+/// The interviewer's standing rules, per track. Constant across stages and levels — the
+/// parts that vary are appended by `system_prompt`.
+///
+/// Split by track because the two rounds are run by different people. A distributed
+/// systems interviewer wants the component that dies and what breaks downstream; an ML
+/// interviewer wants the baseline you beat and the class balance behind the number you
+/// just quoted.
+fn rules(track: Track) -> &'static str {
+    match track {
+        Track::Classic => "\
 You are a senior engineer running a system design interview. The candidate is sitting \
 across from you and you are speaking to them, so address them as \"you\". You are \
 reviewing their architecture diagram and notes, not writing the answer for them.
@@ -80,20 +178,62 @@ Rules:
 - Ground every point in a component, connection, or note that is actually on their board, \
   or in one that is conspicuously missing.
 - Be specific about failure modes: name the component that dies and what breaks downstream.
-- If a back-of-the-envelope number contradicts the design, do the arithmetic and show it.";
+- If a back-of-the-envelope number contradicts the design, do the arithmetic and show it.",
 
-/// The full system prompt for one stage at one level.
+        // The last two rules are this track's version of the lesson the estimation stage
+        // already learned the hard way: a model will read a stated result and agree with
+        // it. "95% accuracy" on a problem with one positive in a thousand is worse than
+        // answering no every time, and a model told only to "assess the metrics" will
+        // congratulate them for it.
+        Track::Ml => "\
+You are a senior machine learning engineer running an ML system design interview. The \
+candidate is sitting across from you and you are speaking to them, so address them as \
+\"you\". You are reviewing their system diagram and notes, not writing the answer for them.
+
+Rules:
+- Speak TO the candidate, never about them. Never write \"the candidate\", \"they\", or \
+  \"them\" — that is talking to an observer who is not in the room.
+- Never hand over a full solution. Surface the gap, then ask the question that exposes it.
+- Ground every point in a component, connection, or note that is actually on their board, \
+  or in one that is conspicuously missing.
+- Never credit a quoted metric on its own. Ask what the class balance is and what the \
+  trivial baseline scores before you agree that a number is good. A high accuracy on a \
+  rare-event problem is usually the model learning to say no.
+- Treat a missing baseline as a finding. If they have not said what a heuristic or a \
+  simpler model would achieve, they have not shown the model earns its cost.
+- Watch for a feature that could not be known at prediction time. Name it as leakage and \
+  say which one.",
+    }
+}
+
+/// The full system prompt for one stage of one track at one level.
+///
+/// The stage's position is computed here rather than written into `focus`, because the
+/// tracks are different lengths — the classic interview is five stages and the ML one is
+/// six. Baking "STAGE 2 of 5" into the text is what made a second track impossible.
 ///
 /// The length cap is load-bearing, not cosmetic: this runs automatically whenever the
 /// canvas goes quiet, so a four-section answer per stage would never finish before the
 /// next edit aborts it.
-pub fn system_prompt(level: Level, stage: Stage) -> String {
+pub fn system_prompt(track: Track, level: Level, stage: Stage) -> String {
+    let stages = track.stages();
+    // A stage from another track is a bug upstream — the handler validates this — but the
+    // prompt still has to say something rather than panic mid-interview.
+    debug_assert!(
+        track.position(stage).is_some(),
+        "{stage:?} is not part of {track:?} — check_stage should have refused this",
+    );
+    let position = track.position(stage).map(|i| i + 1).unwrap_or(1);
+
     format!(
-        "{RULES}\n\n{}\n\n{}\n\nAnswer in under 150 words, then ask exactly one \
-question. No headings, no bullet lists longer than three items. Say nothing about any \
-other stage.",
+        "{}\n\n{}\n\nSTAGE {position} of {} — {}. {}\n\nAnswer in under 150 words, then ask \
+exactly one question. No headings, no bullet lists longer than three items. Say nothing \
+about any other stage.",
+        rules(track),
         level.calibration(),
-        stage.focus(),
+        stages.len(),
+        stage.heading(),
+        stage.focus(track),
     )
 }
 
@@ -434,7 +574,7 @@ mod tests {
 
     #[test]
     fn each_stage_asks_for_only_itself() {
-        let p = system_prompt(Level::Senior, Stage::Estimation);
+        let p = system_prompt(Track::Classic, Level::Senior, Stage::Estimation);
         assert!(p.contains("STAGE 2 of 5"), "the stage must be named: {p}");
         assert!(p.contains("QPS"), "estimation must ask for the numbers");
         assert!(
@@ -449,15 +589,15 @@ mod tests {
         // Without this the model drifts into reporting on the candidate to a third party:
         // "The candidate has provided no notes. What would you like them to implement?"
         for stage in [Stage::Requirements, Stage::Estimation, Stage::Bottlenecks] {
-            let p = system_prompt(Level::Junior, stage);
+            let p = system_prompt(Track::Classic, Level::Junior, stage);
             assert!(p.contains("Speak TO the candidate"), "{stage:?} lost the voice rule");
         }
     }
 
     #[test]
     fn the_level_changes_who_is_in_the_room() {
-        let junior = system_prompt(Level::Junior, Stage::HighLevel);
-        let staff = system_prompt(Level::Staff, Stage::HighLevel);
+        let junior = system_prompt(Track::Classic, Level::Junior, Stage::HighLevel);
+        let staff = system_prompt(Track::Classic, Level::Staff, Stage::HighLevel);
         assert!(junior.contains("JUNIOR role"));
         assert!(staff.contains("STAFF role"));
         assert!(junior.contains("HIGH-LEVEL"), "the stage survives the level swap");
@@ -564,6 +704,78 @@ mod tests {
         // Hedging to a draw is the failure mode when a model is asked to choose.
         assert!(judge_prompt(Level::Senior).contains("VERDICT: DRAW"));
         assert!(judge_prompt(Level::Senior).contains("More components is not better"));
+    }
+
+
+    #[test]
+    fn the_stage_number_is_counted_not_written() {
+        // It used to be baked into each focus string as "STAGE 2 of 5", which is the line
+        // that made a second track impossible — the ML interview is six stages long.
+        let classic = system_prompt(Track::Classic, Level::Senior, Stage::Estimation);
+        assert!(classic.contains("STAGE 2 of 5 — ESTIMATION"), "{classic}");
+
+        let ml = system_prompt(Track::Ml, Level::Senior, Stage::EvaluationAndMonitoring);
+        assert!(ml.contains("STAGE 6 of 6 — EVALUATION AND MONITORING"), "{ml}");
+
+        for track in Track::ALL {
+            for (i, stage) in track.stages().iter().enumerate() {
+                let p = system_prompt(*track, Level::Senior, *stage);
+                let expected = format!("STAGE {} of {}", i + 1, track.stages().len());
+                assert!(p.contains(&expected), "{track:?} {stage:?} wanted {expected}: {p}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_shared_stage_asks_for_different_things_in_each_track() {
+        // Requirements and Estimation are walked by both tracks. If they read the same in
+        // both, the ML interview is a systems interview with different problem text.
+        let classic = system_prompt(Track::Classic, Level::Senior, Stage::Requirements);
+        let ml = system_prompt(Track::Ml, Level::Senior, Stage::Requirements);
+        assert_ne!(classic, ml, "Requirements is identical in both tracks");
+        assert!(ml.contains("label"), "ML requirements must ask what is being predicted");
+        assert!(ml.contains("baseline"), "ML requirements must demand the non-ML baseline");
+        assert!(!classic.contains("baseline"), "a classic round should not ask for one");
+
+        // The estimation lesson has to survive in both: a model will agree with a stated
+        // number unless it is told to recompute it first.
+        for track in Track::ALL {
+            let p = system_prompt(*track, Level::Senior, Stage::Estimation);
+            assert!(p.contains("recompute"), "{track:?} estimation lost the recompute order");
+            assert!(p.contains("GB and TB"), "{track:?} estimation lost the unit warning");
+        }
+    }
+
+    #[test]
+    fn no_stage_leaks_another_stages_focus() {
+        for track in Track::ALL {
+            for stage in track.stages() {
+                let p = system_prompt(*track, Level::Senior, *stage);
+                for other in track.stages() {
+                    if other == stage {
+                        continue;
+                    }
+                    assert!(
+                        !p.contains(other.heading()),
+                        "{track:?} {stage:?} names {other:?}: {p}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_ml_interviewer_will_not_take_a_metric_on_trust() {
+        // The same failure as the estimation stage's: a model reads "95% accuracy" and
+        // congratulates them, without asking what answering "no" every time would score.
+        let p = system_prompt(Track::Ml, Level::Senior, Stage::Modeling);
+        assert!(p.contains("class balance"), "the ML rules lost the class-balance rule: {p}");
+        assert!(p.contains("baseline"), "the ML rules lost the baseline rule");
+        assert!(p.contains("leakage"), "the ML rules lost the leakage rule");
+        assert!(p.contains("machine learning engineer"), "wrong interviewer in the room");
+
+        let classic = system_prompt(Track::Classic, Level::Senior, Stage::DeepDive);
+        assert!(!classic.contains("class balance"), "ML rules leaked into a classic round");
     }
 
 }

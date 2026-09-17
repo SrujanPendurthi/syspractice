@@ -13,7 +13,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{FromRow, SqlitePool};
 
 use crate::critic::Stage;
-use crate::scenarios::Level;
+use crate::scenarios::{self, Level};
 use crate::error::AppError;
 use crate::topology::Topology;
 
@@ -96,22 +96,47 @@ pub struct User {
     pub is_admin: bool,
 }
 
+/// Each problem's own finish line, as `{scenario_id: stage_tag}` for binding.
+///
+/// Per scenario rather than a set of every track's terminal stage, because `solved` has to
+/// mean "walked *this* interview to the end". A flat set would let an ML terminal stage
+/// mark a classic problem solved — `check_stage` in `routes.rs` refuses to write one, but
+/// a definition of completion that depends on a handler having been careful is a
+/// definition that stops holding the first time one is not.
+///
+/// Derived from the scenario list, so a new track or a new problem is completable with no
+/// SQL to edit and nothing here that can disagree with `Track::stages`.
+fn finish_lines() -> String {
+    let map: std::collections::HashMap<&str, String> = scenarios::SCENARIOS
+        .iter()
+        .map(|s| (s.id, stage_tag(s.track.terminal())))
+        .collect();
+    serde_json::to_string(&map).expect("a map of strings always serializes")
+}
+
 pub async fn list_progress(
     pool: &SqlitePool,
     user_id: i64,
 ) -> Result<Vec<ScenarioProgress>, AppError> {
-    // `stage = 'bottlenecks'` is 0 or 1 in SQLite, so MAX over the group is "any attempt
-    // got there". The literal has to match the serde tag that `stage_tag` writes.
+    // The comparison is 0 or 1 in SQLite, so MAX over the group is "any attempt got
+    // there". Matching on `json_each`'s key rather than building a `$."<id>"` path keeps
+    // the id out of SQL syntax entirely: a path built by concatenation fails outright on
+    // an id ending in a backslash, which would 500 this user's progress on every page
+    // load with no way to recover from inside the app. A row whose scenario no longer
+    // exists matches nothing and reads as unsolved, which is the right answer.
     let rows = sqlx::query_as::<_, ScenarioProgress>(
         "SELECT scenario_id,
-                MAX(stage = 'bottlenecks') AS solved,
-                COUNT(*)                   AS attempts,
-                MAX(updated_at)            AS last_seen
+                MAX(EXISTS (SELECT 1 FROM json_each(?2) j
+                            WHERE j.key = attempts.scenario_id
+                              AND j.value = attempts.stage)) AS solved,
+                COUNT(*)        AS attempts,
+                MAX(updated_at) AS last_seen
          FROM attempts
-         WHERE user_id = ?
+         WHERE user_id = ?1
          GROUP BY scenario_id",
     )
     .bind(user_id)
+    .bind(finish_lines())
     .fetch_all(pool)
     .await?;
     Ok(rows)
@@ -209,6 +234,24 @@ pub async fn get_attempt(pool: &SqlitePool, user_id: i64, id: i64) -> Result<Att
     let row = row.ok_or(AppError::NotFound)?;
     // A row whose topology JSON no longer parses is a schema-drift bug, not a missing row.
     Attempt::try_from(row).map_err(|e| AppError::Db(sqlx::Error::Decode(Box::new(e))))
+}
+
+/// Which problem an attempt is against, scoped to its owner like everything else here.
+///
+/// `update_attempt` needs it to know which interview the incoming stage has to belong to,
+/// and the attempt only carries the id. One indexed lookup on a path that already writes.
+pub async fn attempt_scenario(
+    pool: &SqlitePool,
+    user_id: i64,
+    id: i64,
+) -> Result<String, AppError> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT scenario_id FROM attempts WHERE id = ? AND user_id = ?")
+            .bind(id)
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.ok_or(AppError::NotFound)?.0)
 }
 
 pub async fn list_attempts(
@@ -967,6 +1010,7 @@ pub fn parse_level(tag: &str) -> Result<Level, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scenarios::Track;
     use crate::topology::{Node, NodeKind};
 
     /// Tests predate accounts; this keeps them readable by giving each one an owner.
@@ -1433,6 +1477,107 @@ mod tests {
         assert!(!json.contains("ttemptId"), "an attempt id reached the wire: {json}");
         assert!(!json.contains("secret plan"), "a board's notes reached the wire: {json}");
         assert!(json.contains("\"hostSubmitted\":true"), "the status itself must still show");
+    }
+
+
+    #[tokio::test]
+    async fn an_ml_problem_is_solved_at_its_own_last_stage() {
+        let pool = connect(":memory:").await.unwrap();
+        let u = user(&pool, "a@example.com").await;
+
+        // The other half of `each_track_is_solved_at_its_own_finish_line`, which could
+        // only assert the negative until there were ML scenarios to finish.
+        create_attempt(&pool, u, "spam-classifier", &topo(1), "", Stage::EvaluationAndMonitoring)
+            .await
+            .unwrap();
+        create_attempt(&pool, u, "llm-serving", &topo(1), "", Stage::Bottlenecks).await.unwrap();
+
+        let progress = list_progress(&pool, u).await.unwrap();
+        let solved = |id: &str| progress.iter().find(|p| p.scenario_id == id).unwrap().solved;
+
+        assert!(solved("spam-classifier"), "an ML problem is not solved by its own last stage");
+        assert!(
+            !solved("llm-serving"),
+            "a classic terminal stage solved an ML problem",
+        );
+    }
+
+    #[test]
+    fn every_stage_tag_is_pinned() {
+        // There is no test runner on the frontend, so `STAGES_BY_TRACK` in types.ts is
+        // mirrored by hand against nothing. This is the authoritative list to copy from,
+        // and a Rust-side rename fails here rather than silently in the browser.
+        let expect = [
+            (Stage::Requirements, "requirements"),
+            (Stage::Estimation, "estimation"),
+            (Stage::HighLevel, "highLevel"),
+            (Stage::DeepDive, "deepDive"),
+            (Stage::Bottlenecks, "bottlenecks"),
+            (Stage::DataAndFeatures, "dataAndFeatures"),
+            (Stage::Modeling, "modeling"),
+            (Stage::Serving, "serving"),
+            (Stage::EvaluationAndMonitoring, "evaluationAndMonitoring"),
+        ];
+        for (stage, tag) in expect {
+            assert_eq!(stage_tag(stage), tag, "{stage:?} changed its wire format");
+        }
+
+        // Every stage any track walks must appear above, or the list is not authoritative.
+        let known: Vec<&str> = expect.iter().map(|(_, t)| *t).collect();
+        for track in Track::ALL {
+            for stage in track.stages() {
+                assert!(known.contains(&stage_tag(*stage).as_str()), "{stage:?} is unpinned");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn each_track_is_solved_at_its_own_finish_line() {
+        let pool = connect(":memory:").await.unwrap();
+        let u = user(&pool, "a@example.com").await;
+
+        // Both of these are classic problems, so only `bottlenecks` finishes either. The
+        // ML half of this — that `evaluationAndMonitoring` finishes an ML problem — is
+        // asserted in `an_ml_problem_is_solved_at_its_own_last_stage` once ML scenarios
+        // exist; here the point is that the other track's terminal stage must not count.
+        create_attempt(&pool, u, "url-shortener", &topo(1), "", Stage::Bottlenecks).await.unwrap();
+        create_attempt(&pool, u, "chat-app", &topo(1), "", Stage::EvaluationAndMonitoring)
+            .await
+            .unwrap();
+
+        let progress = list_progress(&pool, u).await.unwrap();
+        let solved = |id: &str| progress.iter().find(|p| p.scenario_id == id).unwrap().solved;
+
+        assert!(solved("url-shortener"), "a classic attempt at bottlenecks is not solved");
+        // The point of the per-scenario lookup: an ML terminal stage is only reachable on
+        // a classic problem by a client that went around `check_stage`, and it must not be
+        // rewarded with a tick. Completion cannot depend on a handler having been careful.
+        assert!(
+            !solved("chat-app"),
+            "another track's terminal stage solved a classic problem",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_scenario_that_no_longer_exists_does_not_break_progress() {
+        let pool = connect(":memory:").await.unwrap();
+        let u = user(&pool, "a@example.com").await;
+        create_attempt(&pool, u, "url-shortener", &topo(1), "", Stage::Bottlenecks).await.unwrap();
+
+        // Rows predating the `scenarios::find` check in `create_attempt` can hold any id,
+        // including one that would be invalid inside a JSON path. Progress has to keep
+        // answering for everything else rather than 500 the whole page.
+        sqlx::query("INSERT INTO attempts (user_id, scenario_id, topology, notes, stage) VALUES (?, ?, '{}', '', 'bottlenecks')")
+            .bind(u)
+            .bind(r#"ghost\"#)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let progress = list_progress(&pool, u).await.expect("a stray row must not fail the query");
+        let find = |id: &str| progress.iter().find(|p| p.scenario_id == id);
+        assert!(find("url-shortener").unwrap().solved, "the real scenario stopped being solved");
+        assert!(!find(r#"ghost\"#).unwrap().solved, "an unknown scenario read as solved");
     }
 
 }

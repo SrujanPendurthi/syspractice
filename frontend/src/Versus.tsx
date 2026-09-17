@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
-import { cancelMatch, createMatch, joinMatch, listMatches, listScenarios, Unauthorized } from './api';
+import {
+  cancelMatch,
+  createMatch,
+  joinMatch,
+  listMatches,
+  listScenarios,
+  listTracks,
+  Unauthorized,
+} from './api';
 import { ago } from './time';
-import type { Level, Match, Scenario } from './types';
+import type { Level, Match, Scenario, TrackCard } from './types';
 import { LEVELS } from './types';
 import { useAuth } from './useAuth';
 
@@ -23,6 +31,7 @@ const LENGTHS = [10, 20, 30];
 export function Versus({ onOpen, onSignIn }: VersusProps) {
   const { user } = useAuth();
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
+  const [tracks, setTracks] = useState<TrackCard[]>([]);
   const [open, setOpen] = useState<Match[]>([]);
   const [mine, setMine] = useState<Match[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -39,6 +48,7 @@ export function Versus({ onOpen, onSignIn }: VersusProps) {
 
   useEffect(() => {
     listScenarios().then(setScenarios).catch(() => undefined);
+    listTracks().then(setTracks).catch(() => undefined);
   }, []);
 
   // Keyed on the user: signing in has to pull in your own matches rather than leave the
@@ -77,7 +87,12 @@ export function Versus({ onOpen, onSignIn }: VersusProps) {
         )}
 
         {user ? (
-          <Challenge scenarios={scenarios} onCreate={(id) => onOpen(id)} onError={setError} />
+          <Challenge
+            scenarios={scenarios}
+            tracks={tracks}
+            onCreate={(id) => onOpen(id)}
+            onError={setError}
+          />
         ) : (
           <p className="mt-6 text-base text-ink-dim">
             <button onClick={onSignIn} className="text-accent underline underline-offset-2">
@@ -149,10 +164,12 @@ function status(m: Match, me: number): string {
 
 function Challenge({
   scenarios,
+  tracks,
   onCreate,
   onError,
 }: {
   scenarios: Scenario[];
+  tracks: TrackCard[];
   onCreate: (id: number) => void;
   onError: (message: string) => void;
 }) {
@@ -184,10 +201,18 @@ function Challenge({
         aria-label="Problem"
       >
         <option value="">Pick a problem…</option>
-        {scenarios.map((s) => (
-          <option key={s.id} value={s.id}>
-            {s.title}
-          </option>
+        {/* Grouped, because the two interviews are different exercises and a flat list of
+            thirty-four gives no hint which one you are picking. */}
+        {tracks.map((t) => (
+          <optgroup key={t.id} label={t.label}>
+            {scenarios
+              .filter((s) => s.track === t.id)
+              .map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.title}
+                </option>
+              ))}
+          </optgroup>
         ))}
       </select>
 

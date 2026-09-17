@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { listProgress, listScenarios } from './api';
-import type { Difficulty, Scenario, ScenarioProgress } from './types';
+import { listProgress, listScenarios, listTracks } from './api';
+import { Segmented } from './Segmented';
+import type { Difficulty, Scenario, ScenarioProgress, Track, TrackCard } from './types';
 import { useAuth } from './useAuth';
 
 const DIFFICULTY_TEXT: Record<Difficulty, string> = {
@@ -25,11 +26,16 @@ interface ProblemListProps {
 export function ProblemList({ onOpen, onSignIn }: ProblemListProps) {
   const { user } = useAuth();
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
+  const [tracks, setTracks] = useState<TrackCard[]>([]);
   const [progress, setProgress] = useState<ScenarioProgress[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // Not in the URL: this is a view preference on the landing page, not a place you link
+  // somebody to. `/s/<id>` is the shareable thing and it already carries the track.
+  const [filter, setFilter] = useState<Track | 'all'>('all');
 
   useEffect(() => {
     listScenarios().then(setScenarios).catch((e) => setError(e.message));
+    listTracks().then(setTracks).catch(() => undefined);
     // Best-effort: an empty table and a failed request both mean "nothing solved yet",
     // which is what a first run should look like anyway.
   }, []);
@@ -42,17 +48,28 @@ export function ProblemList({ onOpen, onSignIn }: ProblemListProps) {
 
   const byId = useMemo(() => new Map(progress.map((p) => [p.scenarioId, p])), [progress]);
 
+  // Falls back to the id so a track the server knows about and this build does not still
+  // renders something truthful.
+  const trackLabel = (id: Track) => tracks.find((t) => t.id === id)?.label ?? id;
+
+  // Everything below counts the filtered set, so the ring answers "how am I doing at the
+  // thing I am looking at" rather than always answering for the whole catalogue.
+  const visible = useMemo(
+    () => scenarios.filter((s) => filter === 'all' || s.track === filter),
+    [scenarios, filter],
+  );
+
   const tally = useMemo(
     () =>
       ORDER.map((difficulty) => {
-        const of = scenarios.filter((s) => s.difficulty === difficulty);
+        const of = visible.filter((s) => s.difficulty === difficulty);
         return {
           difficulty,
           total: of.length,
           solved: of.filter((s) => byId.get(s.id)?.solved).length,
         };
       }),
-    [scenarios, byId],
+    [visible, byId],
   );
 
   const solved = tally.reduce((n, t) => n + t.solved, 0);
@@ -61,8 +78,8 @@ export function ProblemList({ onOpen, onSignIn }: ProblemListProps) {
   // order rather than anything a reader wants. Grouping by difficulty puts the ramp at
   // the top and keeps a newly added Easy problem from landing below the Hard ones.
   const rows = useMemo(
-    () => [...scenarios].sort((a, b) => ORDER.indexOf(a.difficulty) - ORDER.indexOf(b.difficulty)),
-    [scenarios],
+    () => [...visible].sort((a, b) => ORDER.indexOf(a.difficulty) - ORDER.indexOf(b.difficulty)),
+    [visible],
   );
 
   return (
@@ -76,6 +93,25 @@ export function ProblemList({ onOpen, onSignIn }: ProblemListProps) {
       </div>
 
       <section>
+        {tracks.length > 1 && (
+          <div className="mb-4">
+            <Segmented
+              label="Interview"
+              hideLabel
+              value={filter}
+              onChange={setFilter}
+              options={[
+                { value: 'all' as const, label: 'All', hint: String(scenarios.length) },
+                ...tracks.map((t) => ({
+                  value: t.id,
+                  label: t.label,
+                  hint: String(scenarios.filter((s) => s.track === t.id).length),
+                })),
+              ]}
+            />
+          </div>
+        )}
+
         {error && (
           <p className="mb-4 rounded border border-hard/40 bg-hard/5 px-3 py-2 text-sm text-hard-ink">
             Could not reach the backend: {error}. Start it with ./dev and reload.
@@ -89,6 +125,7 @@ export function ProblemList({ onOpen, onSignIn }: ProblemListProps) {
                 <span className="sr-only">Status</span>
               </th>
               <th className="py-2 font-medium" scope="col">Problem</th>
+              <th className="w-32 py-2 font-medium" scope="col">Interview</th>
               <th className="w-24 py-2 font-medium" scope="col">Difficulty</th>
               <th className="w-20 py-2 text-right font-medium" scope="col">Attempts</th>
             </tr>
@@ -120,6 +157,13 @@ export function ProblemList({ onOpen, onSignIn }: ProblemListProps) {
                     <Status progress={p} />
                   </td>
                   <td className="py-2.5 text-ink">{s.title}</td>
+                  {/* Sorting is by difficulty alone, so the two interviews interleave.
+                      Without this column an Easy ML problem sits next to an Easy classic
+                      one and the first thing telling you which you opened is the stage
+                      count in the panel. */}
+                  <td className="py-2.5 text-sm text-ink-dim">
+                    {trackLabel(s.track)}
+                  </td>
                   <td className={`py-2.5 text-sm capitalize ${DIFFICULTY_TEXT[s.difficulty]}`}>
                     {s.difficulty}
                   </td>
@@ -134,7 +178,7 @@ export function ProblemList({ onOpen, onSignIn }: ProblemListProps) {
       </section>
 
       <aside>
-        <ProgressRing solved={solved} total={scenarios.length} tally={tally} />
+        <ProgressRing solved={solved} total={visible.length} tally={tally} />
 
         <dl className="mt-6 space-y-2 text-sm">
           {tally.map((t) => (
@@ -151,8 +195,8 @@ export function ProblemList({ onOpen, onSignIn }: ProblemListProps) {
         <p className="mt-6 border-t border-line pt-4 text-xs leading-relaxed text-ink-dim">
           {user ? (
             <>
-              A problem counts as solved once you have worked all five interview stages. It
-              tracks that you went the distance, not that the design was good.
+              A problem counts as solved once you have worked every stage of its
+              interview. It tracks that you went the distance, not that the design was good.
             </>
           ) : (
             <>

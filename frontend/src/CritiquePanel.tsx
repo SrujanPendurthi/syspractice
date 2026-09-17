@@ -1,10 +1,24 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { QuotaExceeded, streamCritique, Unauthorized } from './api';
-import { nextStage, stageIndex, STAGES, type Level, type Stage, type Topology } from './types';
+import {
+  nextStage,
+  stageIndex,
+  stagesFor,
+  type Level,
+  type Stage,
+  type Topology,
+  type Track,
+} from './types';
 import { useAuth } from './useAuth';
 
 interface CritiquePanelProps {
   scenarioId: string;
+  /**
+   * Which interview this is. The two tracks are different lengths, so the pips, the
+   * heading and "next stage" all come from here rather than from a global list. A string,
+   * so it costs the memo nothing.
+   */
+  track: Track;
   stage: Stage;
   level: Level;
   onAdvance: (stage: Stage) => void;
@@ -25,6 +39,7 @@ interface CritiquePanelProps {
 
 function CritiquePanelInner({
   scenarioId,
+  track,
   stage,
   level,
   onAdvance,
@@ -124,14 +139,20 @@ function CritiquePanelInner({
     setText('');
     setError(null);
     setLimit(null);
-  }, [stage, scenarioId]);
+  }, [stage, scenarioId, track]);
 
   // `run` aborts whatever is already streaming, so an edit landing mid-critique restarts
   // cleanly rather than interleaving two responses into the same panel.
   useEffect(() => (auto ? subscribeToIdle(run) : undefined), [auto, subscribeToIdle, run]);
 
-  const index = stageIndex(stage);
-  const next = nextStage(stage);
+  const stages = stagesFor(track);
+  const index = stageIndex(stage, track);
+  const next = nextStage(stage, track);
+
+  // -1 means the stored stage belongs to another track — a stale tab, or an attempt
+  // opened after its problem changed track. Rendering `stages[-1].label` throws and takes
+  // the whole panel down, so the interview restarts from its own first stage instead.
+  const current = stages[index] ?? stages[0];
 
   return (
     <section className="flex w-full shrink-0 flex-col border-t border-line bg-surface lg:h-full lg:w-[28rem] lg:border-t-0 lg:border-l">
@@ -158,9 +179,9 @@ function CritiquePanelInner({
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-base font-semibold">
-              Stage {index + 1} of {STAGES.length}
+              Stage {Math.max(index, 0) + 1} of {stages.length}
             </h2>
-            <p className="text-sm text-ink-dim">{STAGES[index].label}</p>
+            <p className="text-sm text-ink-dim">{current.label}</p>
           </div>
           <button
             onClick={running ? stop : signedIn ? run : onSignIn}
@@ -171,12 +192,16 @@ function CritiquePanelInner({
         </div>
 
         <div className="mt-3 flex items-center gap-2">
-          <div className="flex gap-1">
-            {STAGES.map((s, i) => (
+          <div className="flex flex-1 gap-1">
+            {/* `flex-1` rather than a fixed width: the ML interview has six of these and
+                a sixth fixed-width pip pushed the row into the Next-stage button. */}
+            {stages.map((s, i) => (
               <span
                 key={s.stage}
                 title={s.label}
-                className={`h-1.5 w-6 rounded-full ${i <= index ? 'bg-easy' : 'bg-line'}`}
+                className={`h-1.5 min-w-4 flex-1 rounded-full ${
+                  i <= Math.max(index, 0) ? 'bg-easy' : 'bg-line'
+                }`}
               />
             ))}
           </div>
