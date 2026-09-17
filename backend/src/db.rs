@@ -90,6 +90,9 @@ pub struct User {
     pub id: i64,
     pub email: String,
     pub display_name: String,
+    /// Moderator. Set by hand in SQL — see migration `0006`. It rides along on the user
+    /// rather than being looked up per delete, because every delete needs it.
+    pub is_admin: bool,
 }
 
 pub async fn list_progress(
@@ -248,6 +251,7 @@ pub async fn create_user(
             id: row.0,
             email: email.to_string(),
             display_name: display_name.to_string(),
+            is_admin: false,
         }),
         Err(sqlx::Error::Database(e)) if e.is_unique_violation() => Err(AppError::EmailTaken),
         Err(e) => Err(AppError::Db(e)),
@@ -260,15 +264,15 @@ pub async fn find_user_for_login(
     pool: &SqlitePool,
     email: &str,
 ) -> Result<Option<(User, String)>, AppError> {
-    let row: Option<(i64, String, String, String)> = sqlx::query_as(
-        "SELECT id, email, display_name, password_hash FROM users WHERE email_folded = ?",
+    let row: Option<(i64, String, String, bool, String)> = sqlx::query_as(
+        "SELECT id, email, display_name, is_admin, password_hash FROM users WHERE email_folded = ?",
     )
     .bind(fold_email(email))
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|(id, email, display_name, hash)| {
-        (User { id, email, display_name }, hash)
+    Ok(row.map(|(id, email, display_name, is_admin, hash)| {
+        (User { id, email, display_name, is_admin }, hash)
     }))
 }
 
@@ -313,7 +317,7 @@ pub async fn user_for_token(
     token_hash: &[u8],
 ) -> Result<Option<User>, AppError> {
     let row: Option<User> = sqlx::query_as(
-        "SELECT u.id, u.email, u.display_name
+        "SELECT u.id, u.email, u.display_name, u.is_admin
          FROM auth_sessions s JOIN users u ON u.id = s.user_id
          WHERE s.token_hash = ? AND s.expires_at > datetime('now')",
     )
@@ -414,6 +418,256 @@ pub async fn set_concept_read(
             .await?;
     }
     Ok(())
+}
+
+// --- discussion ---------------------------------------------------------------
+
+/// A post as the index shows it. No `body`: a hundred posts of ten thousand characters is
+/// a megabyte for a page that renders titles, the same reason `/api/concepts` sends
+/// summaries only.
+#[derive(Debug, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct PostSummary {
+    pub id: i64,
+    pub scenario_id: Option<String>,
+    pub title: String,
+    pub author: String,
+    pub author_id: i64,
+    pub score: i64,
+    /// This viewer's vote: -1, 0 or 1. Always 0 when signed out.
+    pub my_vote: i64,
+    pub comments: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct Post {
+    pub id: i64,
+    pub scenario_id: Option<String>,
+    pub title: String,
+    pub body: String,
+    pub author: String,
+    pub author_id: i64,
+    pub score: i64,
+    pub my_vote: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct Comment {
+    pub id: i64,
+    pub body: String,
+    pub author: String,
+    pub author_id: i64,
+    pub created_at: String,
+}
+
+/// Score and comment count are summed on read rather than kept in a counter column, for
+/// the same reason progress is derived: a counter needs a second write on every vote and
+/// is wrong forever the one time that write is lost.
+///
+/// ponytail: correlated subqueries and newest-first. Both are fine while a page of posts
+/// is a page of posts; if the index gets slow, that is the moment for a ranking column,
+/// not before.
+const POST_COLUMNS: &str = "
+    p.id, p.scenario_id, p.title, p.created_at,
+    u.display_name AS author,
+    u.id           AS author_id,
+    COALESCE((SELECT SUM(value) FROM post_votes WHERE post_id = p.id), 0)        AS score,
+    COALESCE((SELECT value FROM post_votes WHERE post_id = p.id AND user_id = ?1), 0) AS my_vote";
+
+/// `viewer` is `None` for a signed-out reader — the discussion is public to read.
+/// `scenario` filters to threads tagged with one problem.
+pub async fn list_posts(
+    pool: &SqlitePool,
+    viewer: Option<i64>,
+    scenario: Option<&str>,
+) -> Result<Vec<PostSummary>, AppError> {
+    let sql = format!(
+        "SELECT {POST_COLUMNS},
+                (SELECT COUNT(*) FROM comments
+                 WHERE post_id = p.id AND deleted_at IS NULL) AS comments
+         FROM posts p JOIN users u ON u.id = p.user_id
+         WHERE p.deleted_at IS NULL AND (?2 IS NULL OR p.scenario_id = ?2)
+         ORDER BY p.created_at DESC LIMIT 100"
+    );
+    let rows = sqlx::query_as::<_, PostSummary>(&sql)
+        .bind(viewer)
+        .bind(scenario)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows)
+}
+
+pub async fn get_post(pool: &SqlitePool, viewer: Option<i64>, id: i64) -> Result<Post, AppError> {
+    let sql = format!(
+        "SELECT {POST_COLUMNS}, p.body
+         FROM posts p JOIN users u ON u.id = p.user_id
+         WHERE p.id = ?2 AND p.deleted_at IS NULL"
+    );
+    sqlx::query_as::<_, Post>(&sql)
+        .bind(viewer)
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or(AppError::NotFound)
+}
+
+pub async fn create_post(
+    pool: &SqlitePool,
+    user_id: i64,
+    scenario_id: Option<&str>,
+    title: &str,
+    body: &str,
+) -> Result<i64, AppError> {
+    let row: (i64,) = sqlx::query_as(
+        "INSERT INTO posts (user_id, scenario_id, title, body) VALUES (?, ?, ?, ?) RETURNING id",
+    )
+    .bind(user_id)
+    .bind(scenario_id)
+    .bind(title)
+    .bind(body)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.0)
+}
+
+/// The author or a moderator, decided in the SQL like every other ownership check. A post
+/// belonging to somebody else reads as `NotFound`, not `Forbidden`.
+pub async fn delete_post(
+    pool: &SqlitePool,
+    user: &User,
+    id: i64,
+) -> Result<(), AppError> {
+    let res = sqlx::query(
+        "UPDATE posts SET deleted_at = datetime('now')
+         WHERE id = ? AND deleted_at IS NULL AND (user_id = ? OR ? = 1)",
+    )
+    .bind(id)
+    .bind(user.id)
+    .bind(user.is_admin)
+    .execute(pool)
+    .await?;
+
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+    Ok(())
+}
+
+pub async fn list_comments(pool: &SqlitePool, post_id: i64) -> Result<Vec<Comment>, AppError> {
+    let rows = sqlx::query_as::<_, Comment>(
+        "SELECT c.id, c.body, c.created_at, u.display_name AS author, u.id AS author_id
+         FROM comments c JOIN users u ON u.id = c.user_id
+         WHERE c.post_id = ? AND c.deleted_at IS NULL
+         ORDER BY c.created_at LIMIT 500",
+    )
+    .bind(post_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// The insert is conditional on the post being alive, so a comment cannot be attached to
+/// something already removed — the foreign key only proves the row exists, not that it is
+/// still visible.
+pub async fn create_comment(
+    pool: &SqlitePool,
+    user_id: i64,
+    post_id: i64,
+    body: &str,
+) -> Result<i64, AppError> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "INSERT INTO comments (post_id, user_id, body)
+         SELECT ?, ?, ?
+         WHERE EXISTS (SELECT 1 FROM posts WHERE id = ? AND deleted_at IS NULL)
+         RETURNING id",
+    )
+    .bind(post_id)
+    .bind(user_id)
+    .bind(body)
+    .bind(post_id)
+    .fetch_optional(pool)
+    .await?;
+    row.map(|r| r.0).ok_or(AppError::NotFound)
+}
+
+pub async fn delete_comment(pool: &SqlitePool, user: &User, id: i64) -> Result<(), AppError> {
+    let res = sqlx::query(
+        "UPDATE comments SET deleted_at = datetime('now')
+         WHERE id = ? AND deleted_at IS NULL AND (user_id = ? OR ? = 1)",
+    )
+    .bind(id)
+    .bind(user.id)
+    .bind(user.is_admin)
+    .execute(pool)
+    .await?;
+
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+    Ok(())
+}
+
+/// `value` is -1, 0 or 1; 0 withdraws the vote. Returns the post's new score.
+///
+/// The upsert is what keeps one user to one ballot — without the primary key conflict
+/// clause, voting twice would insert twice and the sum would count both.
+pub async fn set_post_vote(
+    pool: &SqlitePool,
+    user_id: i64,
+    post_id: i64,
+    value: i64,
+) -> Result<i64, AppError> {
+    let affected = if value == 0 {
+        sqlx::query("DELETE FROM post_votes WHERE post_id = ? AND user_id = ?")
+            .bind(post_id)
+            .bind(user_id)
+            .execute(pool)
+            .await?;
+        // A withdrawn vote that was never cast is not an error, so existence is checked
+        // separately rather than inferred from rows_affected.
+        post_is_live(pool, post_id).await?
+    } else {
+        // The WHERE on the SELECT is also what lets SQLite tell the upsert clause apart
+        // from a join constraint; an unconditional INSERT ... SELECT ... ON CONFLICT is
+        // a parse error.
+        sqlx::query(
+            "INSERT INTO post_votes (post_id, user_id, value)
+             SELECT ?, ?, ?
+             WHERE EXISTS (SELECT 1 FROM posts WHERE id = ? AND deleted_at IS NULL)
+             ON CONFLICT (post_id, user_id) DO UPDATE SET value = excluded.value",
+        )
+        .bind(post_id)
+        .bind(user_id)
+        .bind(value)
+        .bind(post_id)
+        .execute(pool)
+        .await?
+        .rows_affected()
+            > 0
+    };
+
+    if !affected {
+        return Err(AppError::NotFound);
+    }
+
+    let row: (i64,) =
+        sqlx::query_as("SELECT COALESCE(SUM(value), 0) FROM post_votes WHERE post_id = ?")
+            .bind(post_id)
+            .fetch_one(pool)
+            .await?;
+    Ok(row.0)
+}
+
+async fn post_is_live(pool: &SqlitePool, post_id: i64) -> Result<bool, AppError> {
+    let row: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM posts WHERE id = ? AND deleted_at IS NULL")
+        .bind(post_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.is_some())
 }
 
 #[cfg(test)]
@@ -634,4 +888,88 @@ mod tests {
         assert_eq!(critiques_in_last_hour(&pool, alice).await.unwrap(), 3);
         assert_eq!(critiques_in_last_hour(&pool, bob).await.unwrap(), 0, "quota is per user");
     }
+
+    #[tokio::test]
+    async fn only_the_author_or_a_moderator_can_remove_a_post() {
+        let pool = connect(":memory:").await.unwrap();
+        let author = find_user_for_login(&pool, "a@example.com").await.unwrap();
+        assert!(author.is_none(), "fixture assumption: the db starts empty");
+
+        let a = create_user(&pool, "a@example.com", "A", "x").await.unwrap();
+        let b = create_user(&pool, "b@example.com", "B", "x").await.unwrap();
+        let mod_ = User { is_admin: true, ..create_user(&pool, "m@example.com", "M", "x").await.unwrap() };
+
+        let post = create_post(&pool, a.id, None, "Title", "Body").await.unwrap();
+
+        // Somebody else's post is NotFound rather than Forbidden — whether it exists is
+        // not the asker's business, and a 403 answers that question.
+        assert!(delete_post(&pool, &b, post).await.is_err());
+        assert!(get_post(&pool, None, post).await.is_ok(), "B's failed delete removed it anyway");
+
+        delete_post(&pool, &mod_, post).await.unwrap();
+        assert!(get_post(&pool, None, post).await.is_err(), "a removed post is still readable");
+        assert!(list_posts(&pool, None, None).await.unwrap().is_empty());
+
+        // Deleting twice is not a way to discover that something existed.
+        assert!(delete_post(&pool, &mod_, post).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_second_vote_replaces_the_first_rather_than_adding_to_it() {
+        let pool = connect(":memory:").await.unwrap();
+        let a = create_user(&pool, "a@example.com", "A", "x").await.unwrap();
+        let b = create_user(&pool, "b@example.com", "B", "x").await.unwrap();
+        let post = create_post(&pool, a.id, None, "Title", "Body").await.unwrap();
+
+        assert_eq!(set_post_vote(&pool, a.id, post, 1).await.unwrap(), 1);
+        // Without the primary key upsert this would insert a second ballot and read as 2.
+        assert_eq!(set_post_vote(&pool, a.id, post, 1).await.unwrap(), 1);
+        assert_eq!(set_post_vote(&pool, a.id, post, -1).await.unwrap(), -1);
+        assert_eq!(set_post_vote(&pool, b.id, post, 1).await.unwrap(), 0);
+        assert_eq!(set_post_vote(&pool, a.id, post, 0).await.unwrap(), 1);
+
+        let listed = list_posts(&pool, Some(b.id), None).await.unwrap();
+        assert_eq!(listed[0].score, 1);
+        assert_eq!(listed[0].my_vote, 1, "the viewer's own vote did not come back");
+        assert_eq!(
+            list_posts(&pool, None, None).await.unwrap()[0].my_vote,
+            0,
+            "a signed-out reader must not inherit somebody's vote",
+        );
+    }
+
+    #[tokio::test]
+    async fn nothing_attaches_to_a_removed_post() {
+        let pool = connect(":memory:").await.unwrap();
+        let a = create_user(&pool, "a@example.com", "A", "x").await.unwrap();
+        let post = create_post(&pool, a.id, Some("url-shortener"), "Title", "Body").await.unwrap();
+
+        create_comment(&pool, a.id, post, "first").await.unwrap();
+        let orphan = create_comment(&pool, a.id, post, "second").await.unwrap();
+        delete_comment(&pool, &a, orphan).await.unwrap();
+        assert_eq!(list_comments(&pool, post).await.unwrap().len(), 1);
+        assert_eq!(list_posts(&pool, None, None).await.unwrap()[0].comments, 1);
+
+        // The foreign key proves the row exists; it says nothing about whether the post is
+        // still visible, which is the check that actually matters here.
+        delete_post(&pool, &a, post).await.unwrap();
+        assert!(create_comment(&pool, a.id, post, "too late").await.is_err());
+        assert!(set_post_vote(&pool, a.id, post, 1).await.is_err());
+        assert!(create_comment(&pool, a.id, 9999, "no such post").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn the_scenario_filter_only_shows_that_problems_threads() {
+        let pool = connect(":memory:").await.unwrap();
+        let a = create_user(&pool, "a@example.com", "A", "x").await.unwrap();
+        create_post(&pool, a.id, Some("url-shortener"), "Tagged", "Body").await.unwrap();
+        create_post(&pool, a.id, None, "Untagged", "Body").await.unwrap();
+
+        assert_eq!(list_posts(&pool, None, None).await.unwrap().len(), 2, "no filter means everything");
+        let tagged = list_posts(&pool, None, Some("url-shortener")).await.unwrap();
+        assert_eq!(tagged.len(), 1);
+        assert_eq!(tagged[0].title, "Tagged");
+        assert!(list_posts(&pool, None, Some("chat-app")).await.unwrap().is_empty());
+    }
+
 }

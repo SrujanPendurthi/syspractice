@@ -271,6 +271,18 @@ export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
           </Section>
         )}
 
+        <Section title="Discussion">
+          {/* New tab for the same reason as the concept links above. */}
+          <a
+            href={`/discuss?scenario=${encodeURIComponent(scenarioId)}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="block rounded px-2 py-1 text-[12px] text-ink-dim hover:bg-line/50 hover:text-ink"
+          >
+            How other people approached this
+          </a>
+        </Section>
+
         <Section title="Components">
           <div className="grid grid-cols-2 gap-1">
             {NODE_KINDS.map(({ kind, label, accent }) => (

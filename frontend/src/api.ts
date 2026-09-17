@@ -3,6 +3,9 @@ import type {
   Concept,
   ConceptCard,
   Level,
+  Post,
+  PostComment,
+  PostSummary,
   Scenario,
   ScenarioProgress,
   Stage,
@@ -84,6 +87,33 @@ export const listReads = () => send('/api/reads').then(json<string[]>);
 
 export const markRead = (id: string, read: boolean) =>
   post(`/api/concepts/${encodeURIComponent(id)}/read`, { read }).then(json<{ read: boolean }>);
+
+// --- discussion --------------------------------------------------------------
+
+/** Readable signed out. `scenario` narrows the index to one problem's threads. */
+export const listPosts = (scenario?: string) =>
+  send(`/api/posts${scenario ? `?scenario=${encodeURIComponent(scenario)}` : ''}`).then(
+    json<PostSummary[]>,
+  );
+
+export const loadPost = (id: number) =>
+  send(`/api/posts/${id}`).then(json<{ post: Post; comments: PostComment[] }>);
+
+export const createPost = (title: string, body: string, scenarioId: string | null) =>
+  post('/api/posts', { title, body, scenarioId }).then(json<{ id: number }>);
+
+export const deletePost = (id: number) =>
+  send(`/api/posts/${id}`, { method: 'DELETE' }).then(json<{ deleted: number }>);
+
+export const createComment = (postId: number, body: string) =>
+  post(`/api/posts/${postId}/comments`, { body }).then(json<{ id: number }>);
+
+export const deleteComment = (id: number) =>
+  send(`/api/comments/${id}`, { method: 'DELETE' }).then(json<{ deleted: number }>);
+
+/** `value` of 0 withdraws the vote. Returns the post's recomputed score. */
+export const votePost = (postId: number, value: number) =>
+  post(`/api/posts/${postId}/vote`, { value }).then(json<{ score: number; myVote: number }>);
 
 // --- accounts ---------------------------------------------------------------
 

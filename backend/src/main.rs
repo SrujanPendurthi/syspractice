@@ -53,6 +53,16 @@ async fn main() -> anyhow::Result<()> {
             auth::REGISTER_WINDOW,
             "too many accounts created from here — try again later",
         )),
+        post_throttle: Arc::new(auth::Throttle::new(
+            auth::POST_MAX,
+            auth::POST_WINDOW,
+            "you have posted enough for one hour — give the thread a chance to answer",
+        )),
+        comment_throttle: Arc::new(auth::Throttle::new(
+            auth::COMMENT_MAX,
+            auth::COMMENT_WINDOW,
+            "you have commented enough for one hour",
+        )),
         trust_proxy,
         secure_cookies,
         critique_quota,

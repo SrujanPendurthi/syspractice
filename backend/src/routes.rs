@@ -6,11 +6,11 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::{ConnectInfo, Path, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::{KeepAlive, Sse};
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use axum_macros::FromRequest;
 use axum_extra::extract::cookie::CookieJar;
@@ -36,6 +36,10 @@ pub struct AppState {
     /// taken to be usable at all, which makes it an account-existence oracle; rate
     /// limiting is the mitigation available without sending confirmation email.
     pub register_throttle: Arc<Throttle>,
+    /// Posts and comments, keyed by user id. Moderation is a soft delete after the fact;
+    /// these are what keep the queue small enough to moderate by hand.
+    pub post_throttle: Arc<Throttle>,
+    pub comment_throttle: Arc<Throttle>,
     /// Whether `X-Forwarded-For` is trustworthy here. See `auth::client_key`.
     pub trust_proxy: bool,
     /// Off for local development over plain http, on everywhere else.
@@ -66,6 +70,11 @@ pub fn router(state: AppState) -> Router {
         .route("/concepts/{id}", get(get_concept))
         .route("/concepts/{id}/read", post(mark_concept_read))
         .route("/reads", get(list_reads))
+        .route("/posts", get(list_posts).post(create_post))
+        .route("/posts/{id}", get(get_post).delete(delete_post))
+        .route("/posts/{id}/comments", post(create_comment))
+        .route("/posts/{id}/vote", post(vote_post))
+        .route("/comments/{id}", delete(delete_comment))
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
@@ -292,6 +301,142 @@ async fn list_reads(
         None => Vec::new(),
     };
     Ok(Json(reads))
+}
+
+// --- discussion ---------------------------------------------------------------
+
+/// Roughly four pages of prose for a post and one for a comment. These are storage and
+/// readability limits rather than billing ones — nothing here reaches the model — but an
+/// unbounded text column is still a spam vector, and the ceiling has to exist somewhere.
+const MAX_TITLE: usize = 200;
+const MAX_POST: usize = 10_000;
+const MAX_COMMENT: usize = 4_000;
+
+#[derive(Deserialize)]
+struct PostFilter {
+    /// `?scenario=url-shortener` narrows the index to threads tagged with one problem.
+    scenario: Option<String>,
+}
+
+/// Readable signed out, like the problem list and the concepts. `myVote` comes back 0 for
+/// an anonymous reader rather than the endpoint refusing to answer.
+async fn list_posts(
+    State(s): State<AppState>,
+    MaybeUser(user): MaybeUser,
+    Query(filter): Query<PostFilter>,
+) -> Result<impl IntoResponse, AppError> {
+    let posts =
+        db::list_posts(&s.pool, user.map(|u| u.id), filter.scenario.as_deref()).await?;
+    Ok(Json(posts))
+}
+
+async fn get_post(
+    State(s): State<AppState>,
+    MaybeUser(user): MaybeUser,
+    Path(id): Path<i64>,
+) -> Result<impl IntoResponse, AppError> {
+    let post = db::get_post(&s.pool, user.map(|u| u.id), id).await?;
+    let comments = db::list_comments(&s.pool, id).await?;
+    Ok(Json(json!({ "post": post, "comments": comments })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreatePost {
+    title: String,
+    body: String,
+    /// Optional: a post does not have to hang off a problem.
+    scenario_id: Option<String>,
+}
+
+/// Trims, then rejects anything empty or over the cap. Counted in characters rather than
+/// bytes so a limit stated to the user as "200 characters" is the limit they get.
+fn check_text(text: &str, max: usize, complaint: &'static str) -> Result<String, AppError> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > max {
+        return Err(AppError::Invalid(complaint));
+    }
+    Ok(trimmed.to_string())
+}
+
+async fn create_post(
+    State(s): State<AppState>,
+    AuthUser(user): AuthUser,
+    AppJson(body): AppJson<CreatePost>,
+) -> Result<impl IntoResponse, AppError> {
+    let key = user.id.to_string();
+    s.post_throttle.check(&key)?;
+
+    let title = check_text(&body.title, MAX_TITLE, "give the post a title of 1 to 200 characters")?;
+    let text = check_text(&body.body, MAX_POST, "a post has to say something, and stay under 10,000 characters")?;
+
+    // Validated against the static list for the same reason `create_attempt` validates it:
+    // otherwise a client can tag threads onto problems that do not exist, and they are
+    // then unreachable from the only page that filters by scenario.
+    if let Some(id) = &body.scenario_id {
+        scenarios::find(id).ok_or(AppError::NotFound)?;
+    }
+
+    let id = db::create_post(&s.pool, user.id, body.scenario_id.as_deref(), &title, &text).await?;
+    s.post_throttle.record(&key);
+    Ok(Json(json!({ "id": id })))
+}
+
+async fn delete_post(
+    State(s): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<i64>,
+) -> Result<impl IntoResponse, AppError> {
+    db::delete_post(&s.pool, &user, id).await?;
+    Ok(Json(json!({ "deleted": id })))
+}
+
+#[derive(Deserialize)]
+struct CreateComment {
+    body: String,
+}
+
+async fn create_comment(
+    State(s): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(post_id): Path<i64>,
+    AppJson(body): AppJson<CreateComment>,
+) -> Result<impl IntoResponse, AppError> {
+    let key = user.id.to_string();
+    s.comment_throttle.check(&key)?;
+
+    let text = check_text(&body.body, MAX_COMMENT, "a comment has to say something, and stay under 4,000 characters")?;
+    let id = db::create_comment(&s.pool, user.id, post_id, &text).await?;
+    s.comment_throttle.record(&key);
+    Ok(Json(json!({ "id": id })))
+}
+
+async fn delete_comment(
+    State(s): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<i64>,
+) -> Result<impl IntoResponse, AppError> {
+    db::delete_comment(&s.pool, &user, id).await?;
+    Ok(Json(json!({ "deleted": id })))
+}
+
+#[derive(Deserialize)]
+struct Vote {
+    /// -1, 0 or 1. Zero withdraws a vote rather than needing a second endpoint.
+    value: i64,
+}
+
+async fn vote_post(
+    State(s): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(post_id): Path<i64>,
+    AppJson(body): AppJson<Vote>,
+) -> Result<impl IntoResponse, AppError> {
+    if !(-1..=1).contains(&body.value) {
+        return Err(AppError::Invalid("a vote is -1, 0 or 1"));
+    }
+    let score = db::set_post_vote(&s.pool, user.id, post_id, body.value).await?;
+    Ok(Json(json!({ "score": score, "myVote": body.value })))
 }
 
 // --- accounts ----------------------------------------------------------------

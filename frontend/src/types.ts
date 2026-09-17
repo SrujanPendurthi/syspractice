@@ -107,6 +107,8 @@ export interface User {
   id: number;
   email: string;
   displayName: string;
+  /** Moderator. Set by hand in SQL; it only decides whether delete controls are shown. */
+  isAdmin: boolean;
 }
 
 /** Palette metadata. Kept next to NodeKind so adding a kind is one edit here plus one in Rust. */
@@ -185,4 +187,32 @@ export interface ConceptCard {
 export interface Concept extends ConceptCard {
   sections: ConceptSection[];
   probes: string[];
+}
+
+/** Mirror of `PostSummary` in `backend/src/db.rs` — the discussion index, no bodies. */
+export interface PostSummary {
+  id: number;
+  scenarioId: string | null;
+  title: string;
+  author: string;
+  authorId: number;
+  score: number;
+  /** This reader's own vote: -1, 0 or 1. Always 0 signed out. */
+  myVote: number;
+  comments: number;
+  createdAt: string;
+}
+
+/** Mirror of `Post` in `backend/src/db.rs`. */
+export interface Post extends Omit<PostSummary, 'comments'> {
+  body: string;
+}
+
+/** Mirror of `Comment` in `backend/src/db.rs`. */
+export interface PostComment {
+  id: number;
+  body: string;
+  author: string;
+  authorId: number;
+  createdAt: string;
 }

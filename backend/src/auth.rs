@@ -206,6 +206,14 @@ pub const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
 pub const REGISTER_MAX: u32 = 5;
 pub const REGISTER_WINDOW: Duration = Duration::from_secs(60 * 60);
 
+/// Posting is limited per account rather than per address: an account costs a
+/// registration, which is itself limited, so it is the more expensive identity to churn.
+/// The numbers are what a person discussing a problem needs, not what a spammer does.
+pub const POST_MAX: u32 = 5;
+pub const POST_WINDOW: Duration = Duration::from_secs(60 * 60);
+pub const COMMENT_MAX: u32 = 30;
+pub const COMMENT_WINDOW: Duration = Duration::from_secs(60 * 60);
+
 /// Above this many tracked keys, expired entries are swept on the next write. Without it
 /// a spray across distinct keys grows the map forever.
 const SWEEP_AT: usize = 4096;
