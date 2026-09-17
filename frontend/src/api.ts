@@ -3,6 +3,7 @@ import type {
   Concept,
   ConceptCard,
   Level,
+  Match,
   Post,
   PostComment,
   PostSummary,
@@ -114,6 +115,26 @@ export const deleteComment = (id: number) =>
 /** `value` of 0 withdraws the vote. Returns the post's recomputed score. */
 export const votePost = (postId: number, value: number) =>
   post(`/api/posts/${postId}/vote`, { value }).then(json<{ score: number; myVote: number }>);
+
+// --- head-to-head ------------------------------------------------------------
+
+/** `open` is the lobby, `mine` is yours — empty when signed out. */
+export const listMatches = () =>
+  send('/api/matches').then(json<{ open: Match[]; mine: Match[] }>);
+
+export const loadMatch = (id: number) => send(`/api/matches/${id}`).then(json<Match>);
+
+export const createMatch = (scenarioId: string, level: Level, minutes: number) =>
+  post('/api/matches', { scenarioId, level, minutes }).then(json<{ id: number }>);
+
+export const joinMatch = (id: number) => post(`/api/matches/${id}/join`).then(json<Match>);
+
+export const cancelMatch = (id: number) =>
+  post(`/api/matches/${id}/cancel`).then(json<{ cancelled: number }>);
+
+/** Final — the board cannot be edited afterwards. Returns the match, graded if it is ready. */
+export const submitMatch = (id: number, topology: Topology, notes: string) =>
+  post(`/api/matches/${id}/submit`, { topology, notes }).then(json<Match>);
 
 // --- accounts ---------------------------------------------------------------
 

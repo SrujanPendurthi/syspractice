@@ -87,6 +87,11 @@ pub fn router(state: AppState) -> Router {
         .route("/posts/{id}/comments", post(create_comment))
         .route("/posts/{id}/vote", post(vote_post))
         .route("/comments/{id}", delete(delete_comment))
+        .route("/matches", get(list_matches).post(create_match))
+        .route("/matches/{id}", get(get_match))
+        .route("/matches/{id}/join", post(join_match))
+        .route("/matches/{id}/cancel", post(cancel_match))
+        .route("/matches/{id}/submit", post(submit_match))
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
@@ -452,6 +457,235 @@ async fn vote_post(
     }
     let score = db::set_post_vote(&s.pool, user.id, post_id, body.value).await?;
     Ok(Json(json!({ "score": score, "myVote": body.value })))
+}
+
+// --- head-to-head ---------------------------------------------------------------
+
+/// Bounds on the clock. Under five minutes nobody finishes a diagram; over an hour it is
+/// not a race, and the match sits holding a lobby slot.
+const MIN_MINUTES: i64 = 5;
+const MAX_MINUTES: i64 = 60;
+
+/// The lobby: open challenges anyone can take, plus your own matches when signed in.
+/// Readable signed out, because it is the page that has to make the feature look worth
+/// making an account for.
+async fn list_matches(
+    State(s): State<AppState>,
+    MaybeUser(user): MaybeUser,
+) -> Result<impl IntoResponse, AppError> {
+    let open = db::list_open_matches(&s.pool).await?;
+    let mine = match user {
+        Some(u) => db::list_my_matches(&s.pool, u.id).await?,
+        None => Vec::new(),
+    };
+    Ok(Json(json!({ "open": open, "mine": mine })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateMatch {
+    scenario_id: String,
+    #[serde(default = "default_level")]
+    level: Level,
+    minutes: i64,
+}
+
+async fn create_match(
+    State(s): State<AppState>,
+    AuthUser(user): AuthUser,
+    AppJson(body): AppJson<CreateMatch>,
+) -> Result<impl IntoResponse, AppError> {
+    scenarios::find(&body.scenario_id).ok_or(AppError::NotFound)?;
+    if !(MIN_MINUTES..=MAX_MINUTES).contains(&body.minutes) {
+        return Err(AppError::Invalid("a match runs for between 5 and 60 minutes"));
+    }
+
+    let id = db::create_match(&s.pool, user.id, &body.scenario_id, body.level, body.minutes)
+        .await?
+        .ok_or(AppError::Invalid(
+            "you already have three challenges waiting — cancel one or wait for a taker",
+        ))?;
+    Ok(Json(json!({ "id": id })))
+}
+
+async fn join_match(
+    State(s): State<AppState>,
+    AuthUser(user): AuthUser,
+    AppPath(id): AppPath<i64>,
+) -> Result<impl IntoResponse, AppError> {
+    db::join_match(&s.pool, user.id, id).await?;
+    Ok(Json(db::get_match(&s.pool, id).await?))
+}
+
+async fn cancel_match(
+    State(s): State<AppState>,
+    AuthUser(user): AuthUser,
+    AppPath(id): AppPath<i64>,
+) -> Result<impl IntoResponse, AppError> {
+    db::cancel_match(&s.pool, user.id, id).await?;
+    Ok(Json(json!({ "cancelled": id })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SubmitMatch {
+    topology: Topology,
+    #[serde(default)]
+    notes: String,
+}
+
+/// Locks your board in. The attempt is an ordinary attempt — it counts toward progress and
+/// shows up in the sidebar like any other, which is the point: a race is still practice.
+async fn submit_match(
+    State(s): State<AppState>,
+    AuthUser(user): AuthUser,
+    AppPath(id): AppPath<i64>,
+    AppJson(body): AppJson<SubmitMatch>,
+) -> Result<impl IntoResponse, AppError> {
+    check_notes(&body.notes)?;
+    let m = db::get_match(&s.pool, id).await?;
+    if m.host_id != user.id && m.guest_id != Some(user.id) {
+        // Not yours to submit to, and saying so would confirm the match exists.
+        return Err(AppError::NotFound);
+    }
+
+    // Cheap pre-check, purely so a double-clicked Submit does not leave a duplicate
+    // attempt behind. The UPDATE below is still the thing that decides — this cannot be
+    // relied on, because the deadline can pass between here and there.
+    if if m.host_id == user.id { m.host_submitted } else { m.guest_submitted } {
+        return Err(AppError::Invalid(
+            "you have already submitted — a board is locked in once it is sent",
+        ));
+    }
+
+    // The attempt is written first: a saved board that failed to attach to a match is a
+    // recoverable annoyance, whereas a match pointing at an attempt that was never stored
+    // is a match that cannot be graded.
+    let attempt = db::create_attempt(
+        &s.pool,
+        user.id,
+        &m.scenario_id,
+        &body.topology,
+        &body.notes,
+        Stage::Bottlenecks,
+    )
+    .await?;
+
+    if !db::submit_match_attempt(&s.pool, user.id, id, attempt).await? {
+        // The UPDATE is the gate; this read only picks which refusal to report, so a
+        // deadline passing between the two cannot let anything through.
+        let now = db::get_match(&s.pool, id).await?;
+        let mine = if now.host_id == user.id { now.host_submitted } else { now.guest_submitted };
+        return Err(AppError::Invalid(if mine {
+            "you have already submitted — a board is locked in once it is sent"
+        } else if now.cancelled {
+            "that match was cancelled"
+        } else if now.started_at.is_none() {
+            "nobody has taken this challenge yet"
+        } else {
+            "the clock ran out"
+        }));
+    }
+
+    Ok(Json(grade_if_ready(&s, id, &user).await?))
+}
+
+async fn get_match(
+    State(s): State<AppState>,
+    MaybeUser(user): MaybeUser,
+    AppPath(id): AppPath<i64>,
+) -> Result<impl IntoResponse, AppError> {
+    match user {
+        // Grading happens on read, by a participant, rather than on a timer. A background
+        // job would be a second thing to run and supervise for an event that only matters
+        // when somebody is looking at it.
+        Some(u) => Ok(Json(grade_if_ready(&s, id, &u).await?)),
+        None => Ok(Json(db::get_match(&s.pool, id).await?)),
+    }
+}
+
+/// Grades the match if it is ready and nobody else has claimed it, then returns it.
+///
+/// Every early return hands back the match unchanged: a match that is not ready, is being
+/// graded by the other player right now, or is already graded is not an error.
+async fn grade_if_ready(
+    s: &AppState,
+    id: i64,
+    viewer: &db::User,
+) -> Result<db::MatchView, AppError> {
+    let m = db::get_match(&s.pool, id).await?;
+    let participant = m.host_id == viewer.id || m.guest_id == Some(viewer.id);
+    if m.verdict.is_some() || !participant {
+        return Ok(m);
+    }
+    if !db::claim_grading(&s.pool, id).await? {
+        return Ok(m);
+    }
+
+    let (host, guest) = db::match_designs(&s.pool, id).await?;
+
+    // A walkover needs no model: there is nothing to compare, and charging inference for
+    // a verdict that is already decided by the clock would be charging for arithmetic.
+    // Written in the third person: one verdict is stored and both players read it, so
+    // "your opponent did not submit" is read by the opponent as if they had won.
+    const WALKOVER: &str = "Only one design was submitted before the clock ran out.";
+    let decided = match (&host, &guest) {
+        (None, None) => Some(("Neither design was submitted before the clock ran out.", "draw")),
+        (Some(_), None) => Some((WALKOVER, "host")),
+        (None, Some(_)) => Some((WALKOVER, "guest")),
+        (Some(_), Some(_)) => None,
+    };
+    if let Some((verdict, winner)) = decided {
+        db::finish_grading(&s.pool, id, verdict, winner).await?;
+        return db::get_match(&s.pool, id).await;
+    }
+
+    let scenario = scenarios::find(&m.scenario_id).ok_or(AppError::NotFound)?;
+    let level = db::parse_level(&m.level)?;
+    let (host, guest) = (host.unwrap(), guest.unwrap());
+
+    // Which player is shown as "Design A" is decided by match id parity, so position bias
+    // does not systematically favour whoever created the challenge.
+    let host_is_a = critic::host_is_design_a(id);
+    let (a, b) = if host_is_a { (&host, &guest) } else { (&guest, &host) };
+
+    // ponytail: one unit of quota, charged to whoever's read triggered the grading —
+    // usually the player who submitted last. It is one inference shared by two people;
+    // splitting it fairly needs a second kind of ledger, which is not worth a table yet.
+    let reservation = match db::reserve_critique(&s.pool, viewer.id, s.critique_quota).await? {
+        Some(r) => r,
+        None => {
+            // Give the claim back, or the match is stamped graded with no verdict in it
+            // and neither player can ever get one.
+            db::release_grading(&s.pool, id).await?;
+            return Err(AppError::QuotaExceeded(s.critique_quota));
+        }
+    };
+
+    let prompt = critic::build_verdict_prompt(
+        scenario,
+        level,
+        (&a.0, &a.1),
+        (&b.0, &b.1),
+    );
+
+    let text = match critic::complete(&s.runner_url, &s.model, critic::judge_prompt(level), prompt).await {
+        Ok(text) => text,
+        Err(e) => {
+            db::release_critique(&s.pool, reservation).await?;
+            db::release_grading(&s.pool, id).await?;
+            return Err(e);
+        }
+    };
+
+    let winner = match critic::parse_verdict(&text) {
+        critic::Winner::Draw => "draw",
+        critic::Winner::A => if host_is_a { "host" } else { "guest" },
+        critic::Winner::B => if host_is_a { "guest" } else { "host" },
+    };
+
+    db::finish_grading(&s.pool, id, &text, winner).await?;
+    db::get_match(&s.pool, id).await
 }
 
 // --- accounts ----------------------------------------------------------------

@@ -22,9 +22,10 @@ interface ProblemListProps {
   onSignIn: () => void;
   onLearn: () => void;
   onDiscuss: () => void;
+  onVersus: () => void;
 }
 
-export function ProblemList({ onOpen, onSignIn, onLearn, onDiscuss }: ProblemListProps) {
+export function ProblemList({ onOpen, onSignIn, onLearn, onDiscuss, onVersus }: ProblemListProps) {
   const { user, signOut } = useAuth();
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [progress, setProgress] = useState<ScenarioProgress[]>([]);
@@ -86,6 +87,9 @@ export function ProblemList({ onOpen, onSignIn, onLearn, onDiscuss }: ProblemLis
           </button>
           <button onClick={onDiscuss} className="text-[13px] text-ink-dim hover:text-ink">
             Discussion
+          </button>
+          <button onClick={onVersus} className="text-[13px] text-ink-dim hover:text-ink">
+            1v1
           </button>
 
           {user ? (

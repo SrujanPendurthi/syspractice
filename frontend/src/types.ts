@@ -216,3 +216,30 @@ export interface PostComment {
   authorId: number;
   createdAt: string;
 }
+
+/**
+ * Mirror of `MatchView` in `backend/src/db.rs`.
+ *
+ * There are no attempt ids here on purpose. Those identify the two boards, and an
+ * opponent holding the id of yours mid-race could read your design — the server never
+ * sends them, and this type is the reminder not to add them.
+ */
+export interface Match {
+  id: number;
+  scenarioId: string;
+  level: Level;
+  minutes: number;
+  hostId: number;
+  host: string;
+  guestId: number | null;
+  guest: string | null;
+  startedAt: string | null;
+  /** `startedAt + minutes`, computed server-side. Null until somebody joins. */
+  deadline: string | null;
+  hostSubmitted: boolean;
+  guestSubmitted: boolean;
+  cancelled: boolean;
+  verdict: string | null;
+  winner: 'host' | 'guest' | 'draw' | null;
+  createdAt: string;
+}

@@ -10,6 +10,7 @@ import {
   Unauthorized,
   votePost,
 } from './api';
+import { ago } from './time';
 import type { Post, PostComment, PostSummary, Scenario } from './types';
 import { useAuth } from './useAuth';
 
@@ -20,19 +21,6 @@ interface DiscussProps {
   onBack: () => void;
   onOpenScenario: (id: string) => void;
   onSignIn: () => void;
-}
-
-/**
- * SQLite writes `datetime('now')` as UTC with no zone marker, which `new Date` reads as
- * local time — every timestamp would be hours out. The 'Z' is what makes it UTC again.
- */
-function ago(iso: string): string {
-  const then = new Date(`${iso.replace(' ', 'T')}Z`).getTime();
-  const mins = Math.round((Date.now() - then) / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  if (mins < 60 * 24) return `${Math.round(mins / 60)}h ago`;
-  return `${Math.round(mins / 1440)}d ago`;
 }
 
 export function Discuss({ postId, onOpen, onBack, onOpenScenario, onSignIn }: DiscussProps) {

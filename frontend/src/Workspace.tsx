@@ -4,6 +4,7 @@ import { useEdgesState, useNodesState } from '@xyflow/react';
 import { AuthPage } from './AuthPage';
 import { Canvas } from './Canvas';
 import { CritiquePanel } from './CritiquePanel';
+import { MatchPanel } from './MatchPanel';
 import { listAttempts, listConcepts, listScenarios, loadAttempt, saveAttempt, updateAttempt, Unauthorized } from './api';
 import { useAuth } from './useAuth';
 import {
@@ -42,9 +43,13 @@ const nextId = () => `n${Date.now().toString(36)}${nodeSeq++}`;
 interface WorkspaceProps {
   scenarioId: string;
   onBack: () => void;
+  /** Set when this canvas is one side of a race. Swaps the critique panel for the clock. */
+  matchId?: number;
+  /** Fixed by a match, so both boards are graded against the same filtered rubric. */
+  level?: Level;
 }
 
-export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
+export function Workspace({ scenarioId, onBack, matchId, level: fixedLevel }: WorkspaceProps) {
   const { user, clear } = useAuth();
   // Signing in happens over the workspace rather than by routing to /login. Navigating
   // would unmount this component, and with it the diagram, the notes and the stage — so
@@ -59,7 +64,7 @@ export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
   const [status, setStatus] = useState<string | null>(null);
   const [notes, setNotes] = useState('');
   const [stage, setStage] = useState<Stage>('requirements');
-  const [level, setLevel] = useState<Level>('senior');
+  const [level, setLevel] = useState<Level>(fixedLevel ?? 'senior');
 
   const [nodes, setNodes, onNodesChange] = useNodesState<CanvasNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<CanvasEdge>([]);
@@ -84,9 +89,12 @@ export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
   // Restarting on every edit is what gives abort-on-change for free: the cleanup clears
   // the pending timer, and the panel aborts its in-flight stream when it re-runs.
   useEffect(() => {
+    // No auto-critique during a race. It would be a paid hint on a clock, and the point
+    // of the format is that the only feedback is the verdict at the end.
+    if (matchId) return;
     const t = setTimeout(() => idleListeners.current.forEach((cb) => cb()), IDLE_MS);
     return () => clearTimeout(t);
-  }, [nodes, edges, notes]);
+  }, [nodes, edges, notes, matchId]);
 
   useEffect(() => {
     listScenarios()
@@ -225,20 +233,24 @@ export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
         </div>
 
         <Section title="Scenario">
-          <label className="mt-2 flex items-center gap-2 text-[12px] text-ink-dim">
-            Interviewing for
-            <select
-              value={level}
-              onChange={(e) => setLevel(e.target.value as Level)}
-              className="flex-1 rounded border border-line bg-page px-2 py-1 text-[13px] text-ink"
-            >
-              {LEVELS.map((l) => (
-                <option key={l.level} value={l.level}>
-                  {l.label}
-                </option>
-              ))}
-            </select>
-          </label>
+          {fixedLevel ? (
+            <p className="text-[12px] capitalize text-ink-dim">Interviewing for {fixedLevel}</p>
+          ) : (
+            <label className="mt-2 flex items-center gap-2 text-[12px] text-ink-dim">
+              Interviewing for
+              <select
+                value={level}
+                onChange={(e) => setLevel(e.target.value as Level)}
+                className="flex-1 rounded border border-line bg-page px-2 py-1 text-[13px] text-ink"
+              >
+                {LEVELS.map((l) => (
+                  <option key={l.level} value={l.level}>
+                    {l.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
 
           {scenario && (
             <div className="mt-3 space-y-3 text-[12px] leading-relaxed text-ink-dim">
@@ -304,6 +316,7 @@ export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
           </ul>
         </Section>
 
+        {!matchId && (
         <Section title="Attempt">
           <div className="flex gap-1">
             <button onClick={save} className="flex-1 rounded border border-line bg-page px-2 py-1.5 text-[12px] hover:border-ink-faint">
@@ -340,6 +353,7 @@ export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
               ))}
           </ul>
         </Section>
+        )}
       </aside>
 
       <main className="min-h-[24rem] flex-1">
@@ -353,7 +367,16 @@ export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
         />
       </main>
 
-      {scenario && (
+      {matchId ? (
+        <MatchPanel
+          matchId={matchId}
+          getTopology={getTopology}
+          notes={notes}
+          onNotesChange={setNotes}
+          onBack={onBack}
+        />
+      ) : (
+        scenario && (
         <CritiquePanel
           scenarioId={scenario.id}
           stage={stage}
@@ -366,6 +389,7 @@ export function Workspace({ scenarioId, onBack }: WorkspaceProps) {
           signedIn={!!user}
           onSignIn={onSignIn}
         />
+        )
       )}
     </div>
   );

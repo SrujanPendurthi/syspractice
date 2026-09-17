@@ -210,6 +210,175 @@ pub async fn stream_critique(
     })
 }
 
+// --- head-to-head grading ------------------------------------------------------
+
+/// The judge's standing rules.
+///
+/// Three biases are named explicitly because a model exhibits all three unprompted, and
+/// the first one is the reason the caller swaps which player is shown as A:
+///
+/// * position — the first option presented wins more than it should;
+/// * verbosity — the bigger diagram reads as the better one;
+/// * conflict avoidance — asked to choose, it will hedge to a draw given any excuse.
+const JUDGE_RULES: &str = "\
+You are judging a head-to-head system design exercise. Two candidates were given the same \
+problem, the same requirements, the same rubric and the same amount of time. Decide which \
+design better satisfies the rubric.
+
+Rules:
+- Judge against the rubric lines below and nothing else. The design that covers more of \
+  them wins.
+- More components is not better. A component the rubric never asks for is a failure mode \
+  they added, not a feature.
+- The order the designs appear in is not a signal, and neither is their size. Design A has \
+  no advantage over Design B for being first.
+- Name the specific rubric lines each design covered and each one it missed. Do not \
+  praise in general terms.
+- Address both candidates as \"Design A\" and \"Design B\" — you do not know who they are.
+
+Answer in under 250 words. Your final line must be exactly one of:
+VERDICT: A
+VERDICT: B
+VERDICT: DRAW
+Use DRAW only when neither design covers a rubric line the other missed. \"Both were \
+good\" is not a draw.";
+
+/// The judge's system prompt for one level.
+///
+/// The level matters here for the same reason it matters to the critic: a junior match
+/// graded on multi-region failover is graded on lines neither player was ever shown.
+/// `rubric_for` has already filtered the list — this stops the model reaching past it.
+pub fn judge_prompt(level: Level) -> String {
+    let scope = match level {
+        Level::Junior => "Both candidates are being judged at JUNIOR level. Do not credit \
+or penalise anything to do with multi-region, consistency models, or hot-spot handling — \
+those are out of scope and neither design was asked for them.",
+        Level::Senior => "Both candidates are being judged at SENIOR level. Partitioning, \
+failure modes, and a justified choice over its alternative are all fair game.",
+        Level::Staff => "Both candidates are being judged at STAFF level. Assume both \
+designs are competent, and separate them on trade-offs and on what breaks under load or \
+partition.",
+    };
+    format!("{JUDGE_RULES}\n\n{scope}")
+}
+
+/// Which side of a match is shown to the judge as "Design A".
+///
+/// Decided by match id parity rather than by role, so the host is not permanently in the
+/// slot that position bias favours. Deterministic, so a regrade lays the two designs out
+/// the same way and cannot flip the result by reshuffling.
+pub fn host_is_design_a(match_id: i64) -> bool {
+    match_id % 2 == 0
+}
+
+/// Build the judge's prompt. Split from the HTTP call for the same reason
+/// `build_prompt` is: it is the part worth testing without a model running.
+pub fn build_verdict_prompt(
+    scenario: &Scenario,
+    level: Level,
+    a: (&Topology, &str),
+    b: (&Topology, &str),
+) -> String {
+    let side = |label: &str, (topology, notes): (&Topology, &str)| {
+        let notes = if notes.trim().is_empty() {
+            "(no notes written)"
+        } else {
+            notes.trim()
+        };
+        format!("DESIGN {label}\nNotes:\n{notes}\n\nDiagram:\n{}\n", topology.describe())
+    };
+
+    format!(
+        "SCENARIO: {}\n{}\n\nFunctional requirements:\n{}\nNon-functional requirements:\n{}\n\
+         Rubric both designs are graded against:\n{}\n\n{}\n{}",
+        scenario.title,
+        scenario.prompt,
+        scenario.functional.iter().map(|s| format!("  - {s}\n")).collect::<String>(),
+        scenario.non_functional.iter().map(|s| format!("  - {s}\n")).collect::<String>(),
+        scenario.rubric_for(level).map(|s| format!("  - {s}\n")).collect::<String>(),
+        side("A", a),
+        side("B", b),
+    )
+}
+
+/// Which design the judge picked, read off the verdict text.
+///
+/// Scans from the end: the instruction puts the line last, but a model that adds a
+/// sign-off after it should not cost the match its result. An unreadable verdict is a
+/// draw rather than an error — the text is still worth showing, and inventing a winner
+/// from an answer that did not name one is worse than declining to.
+pub fn parse_verdict(text: &str) -> Winner {
+    for line in text.lines().rev() {
+        let line = line.trim().trim_start_matches(['*', '#', ' ']);
+        let Some(rest) = line.strip_prefix("VERDICT:") else { continue };
+        return match rest.trim().trim_end_matches(['.', '*']).to_ascii_uppercase().as_str() {
+            "A" => Winner::A,
+            "B" => Winner::B,
+            _ => Winner::Draw,
+        };
+    }
+    Winner::Draw
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Winner {
+    A,
+    B,
+    Draw,
+}
+
+/// One non-streaming completion.
+///
+/// The critique endpoint streams because someone is watching it arrive. A verdict is
+/// written once, stored, and read by both players — streaming it would mean two model
+/// calls producing two different answers to the same question.
+pub async fn complete(
+    runner_url: &str,
+    model: &str,
+    system: String,
+    prompt: String,
+) -> Result<String, AppError> {
+    let url = format!("{runner_url}/v1/chat/completions");
+
+    let body: serde_json::Value = reqwest::Client::new()
+        .post(&url)
+        .json(&json!({
+            "model": model,
+            "stream": false,
+            // Lower than the critique's 0.4: the same two designs should not change places
+            // between one grading and the next.
+            "temperature": 0.2,
+            "messages": [
+                { "role": "system", "content": system },
+                { "role": "user",   "content": prompt },
+            ],
+        }))
+        .send()
+        .await
+        .map_err(|_| AppError::Runner(url.clone()))?
+        .error_for_status()
+        .map_err(|e| AppError::Runner(format!("{url} ({e})")))?
+        .json()
+        .await
+        .map_err(|e| AppError::Runner(format!("{url} (unreadable answer: {e})")))?;
+
+    // Some runners answer in `content`, a reasoning model may leave it empty and put the
+    // answer in `reasoning`. An empty verdict is a runner failure, not a draw.
+    let choice = &body["choices"][0]["message"];
+    let text = choice["content"]
+        .as_str()
+        .filter(|t| !t.trim().is_empty())
+        .or_else(|| choice["reasoning"].as_str())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    if text.is_empty() {
+        return Err(AppError::Runner(format!("{url} (empty answer)")));
+    }
+    Ok(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,4 +491,79 @@ mod tests {
         let frame = r#"{"choices":[{"delta":{"content":"answer","reasoning":"thought"}}]}"#;
         assert_eq!(parse_delta(frame), Some(Delta::Content("answer".into())));
     }
+
+    #[test]
+    fn the_verdict_line_is_read_from_the_end_and_survives_decoration() {
+        assert_eq!(parse_verdict("Design A partitioned.\nVERDICT: A"), Winner::A);
+        assert_eq!(parse_verdict("VERDICT: B"), Winner::B);
+        assert_eq!(parse_verdict("VERDICT: DRAW"), Winner::Draw);
+
+        // Models decorate. None of these should cost a match its result.
+        assert_eq!(parse_verdict("**VERDICT: B**"), Winner::B);
+        assert_eq!(parse_verdict("verdict: a"), Winner::Draw, "the label is literal");
+        assert_eq!(parse_verdict("VERDICT: a."), Winner::A);
+        assert_eq!(parse_verdict("VERDICT: A\n\nGood luck to both of you!"), Winner::A);
+
+        // Two lines, the last one wins — a model that restates its answer has restated it,
+        // not changed its mind halfway up the page.
+        assert_eq!(parse_verdict("VERDICT: A\nOn reflection:\nVERDICT: B"), Winner::B);
+
+        // An unreadable verdict is a draw, not an invented winner. The text is still
+        // worth showing; guessing which design it meant is not.
+        assert_eq!(parse_verdict("Both were strong designs."), Winner::Draw);
+        assert_eq!(parse_verdict("VERDICT: C"), Winner::Draw);
+        assert_eq!(parse_verdict(""), Winner::Draw);
+    }
+
+    #[test]
+    fn which_player_is_design_a_depends_on_the_match_not_the_role() {
+        // Position bias is real: whichever design is shown first wins more than it should.
+        // Fixing the host in slot A would hand that advantage to whoever created the
+        // challenge, every time.
+        assert!(host_is_design_a(2));
+        assert!(!host_is_design_a(3));
+        // Deterministic, so a regrade lays the same two designs out the same way rather
+        // than flipping the result by reshuffling them.
+        assert_eq!(host_is_design_a(7), host_is_design_a(7));
+    }
+
+    #[test]
+    fn the_judge_sees_two_designs_and_neither_players_name() {
+        let scenario = scenarios::find("url-shortener").unwrap();
+        let mine = Topology {
+            nodes: vec![Node { id: "n1".into(), kind: NodeKind::Cache, label: "Redis".into(), x: 0.0, y: 0.0 }],
+            edges: vec![],
+        };
+        let theirs = Topology {
+            nodes: vec![Node { id: "n2".into(), kind: NodeKind::Database, label: "Postgres".into(), x: 0.0, y: 0.0 }],
+            edges: vec![],
+        };
+
+        let p = build_verdict_prompt(scenario, Level::Senior, (&mine, "1157 writes/sec"), (&theirs, ""));
+        assert!(p.contains("DESIGN A") && p.contains("DESIGN B"));
+        assert!(p.contains("Redis [cache]") && p.contains("Postgres [database]"), "both diagrams must reach it: {p}");
+        assert!(p.contains("1157 writes/sec"), "notes must reach it");
+        assert!(p.contains("(no notes written)"), "an empty pane is a finding, not a gap: {p}");
+        assert!(p.contains("Key generation strategy"), "the rubric is what they are separated on");
+        // The judge must not be told who is who — "host" and "guest" are roles, and one of
+        // them is the person who picked the problem.
+        assert!(!p.contains("host") && !p.contains("guest"), "a role label leaked to the judge: {p}");
+    }
+
+    #[test]
+    fn a_junior_match_is_not_decided_on_staff_concerns() {
+        let scenario = scenarios::find("url-shortener").unwrap();
+        let t = Topology::default();
+        let junior = build_verdict_prompt(scenario, Level::Junior, (&t, ""), (&t, ""));
+        assert!(
+            !junior.contains("thundering herd"),
+            "a staff rubric line reached a junior match: {junior}"
+        );
+        assert!(judge_prompt(Level::Junior).contains("JUNIOR"));
+        assert!(judge_prompt(Level::Staff).contains("STAFF"));
+        // Hedging to a draw is the failure mode when a model is asked to choose.
+        assert!(judge_prompt(Level::Senior).contains("VERDICT: DRAW"));
+        assert!(judge_prompt(Level::Senior).contains("More components is not better"));
+    }
+
 }
