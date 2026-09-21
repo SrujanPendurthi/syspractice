@@ -100,6 +100,14 @@ how the training set is sampled, how class imbalance is handled, and what happen
 user or item seen for the first time. Ignore the model architecture entirely.",
 
             (_, Stage::Modeling) => "\
+If their notes quote an accuracy figure, do this before anything else. A model that \
+always answers \"no\" — never flags a single case — scores 100% minus the percentage of \
+positive cases. Subtract the percentage as written: if 2% are positive, 100 - 2 = 98%. \
+Do not convert it to a fraction first; that is where the answer goes wrong by a factor of \
+ten. Work that number out from their stated rate, and make your first sentence put it next \
+to their accuracy and say which is higher. If they give no positive rate, your first \
+sentence asks for it. Only then grade the rest.
+
 Grade only the model choice and how it is trained. Does the model suit the data they \
 have, rather than the data they wish they had? Push on the simplest thing that could \
 work first. Ask how often it is retrained and what triggers that. If the design retrieves \
@@ -115,6 +123,14 @@ with no answer for the first request after a deploy has not finished. Ignore how
 model was trained.",
 
             (_, Stage::EvaluationAndMonitoring) => "\
+If their notes quote an accuracy figure, do this before anything else. A model that \
+always answers \"no\" — never flags a single case — scores 100% minus the percentage of \
+positive cases. Subtract the percentage as written: if 2% are positive, 100 - 2 = 98%. \
+Do not convert it to a fraction first; that is where the answer goes wrong by a factor of \
+ten. Work that number out from their stated rate, and make your first sentence put it next \
+to their accuracy and say which is higher. If they give no positive rate, your first \
+sentence asks for it. Only then grade the rest.
+
 Grade only what happens after it ships. Which offline metric did they choose and why is \
 it a reasonable stand-in for the online one — and what would make the two disagree? How \
 is the change actually measured on real traffic? Then the failure modes specific to this \
@@ -180,11 +196,21 @@ Rules:
 - Be specific about failure modes: name the component that dies and what breaks downstream.
 - If a back-of-the-envelope number contradicts the design, do the arithmetic and show it.",
 
-        // The last two rules are this track's version of the lesson the estimation stage
+        // The metric rules are this track's version of the lesson the estimation stage
         // already learned the hard way: a model will read a stated result and agree with
-        // it. "95% accuracy" on a problem with one positive in a thousand is worse than
-        // answering no every time, and a model told only to "assess the metrics" will
-        // congratulate them for it.
+        // it. Measured on MiniCPM5-2B: told only to "ask what the class balance is", it was
+        // handed notes saying spam was 0.5% of messages and a model scoring 95%, and in two
+        // runs out of two it flagged the number as suspicious without once working out that
+        // answering "not spam" every time scores 99.5%. A general rule here was not enough
+        // either: moved into this list with a worked example, it went 0 for 6 — four runs
+        // never considered it and two computed the figure in their reasoning, got the
+        // direction muddled, and dropped it. What the estimation stage does instead is put
+        // the ordered computation inside the stage's own focus, first. The Modeling and
+        // Evaluation focus strings now do the same, with the formula spelled out and the
+        // answer's first sentence fixed: 6/6 then led with the comparison and reached the
+        // right verdict, 4/6 with the exact figure — the two misses turned 0.5% into 99.95%,
+        // the GB/TB slip again, so the subtraction is now shown on a percentage with an
+        // explicit warning not to convert it. This rule stays as the standing principle.
         Track::Ml => "\
 You are a senior machine learning engineer running an ML system design interview. The \
 candidate is sitting across from you and you are speaking to them, so address them as \
@@ -196,9 +222,8 @@ Rules:
 - Never hand over a full solution. Surface the gap, then ask the question that exposes it.
 - Ground every point in a component, connection, or note that is actually on their board, \
   or in one that is conspicuously missing.
-- Never credit a quoted metric on its own. Ask what the class balance is and what the \
-  trivial baseline scores before you agree that a number is good. A high accuracy on a \
-  rare-event problem is usually the model learning to say no.
+- Never credit a quoted accuracy on its own. Compare it with what a model that always \
+  predicts the most common class would score, and state that figure next to theirs.
 - Treat a missing baseline as a finding. If they have not said what a heuristic or a \
   simpler model would achieve, they have not shown the model earns its cost.
 - Watch for a feature that could not be known at prediction time. Name it as leakage and \
@@ -769,13 +794,28 @@ mod tests {
         // The same failure as the estimation stage's: a model reads "95% accuracy" and
         // congratulates them, without asking what answering "no" every time would score.
         let p = system_prompt(Track::Ml, Level::Senior, Stage::Modeling);
-        assert!(p.contains("class balance"), "the ML rules lost the class-balance rule: {p}");
+        assert!(
+            p.contains("always predicts the most common class"),
+            "the ML rules no longer order the trivial-baseline computation: {p}",
+        );
+        assert!(
+            p.contains("state that figure next to theirs"),
+            "the rule must make the model show its number, not just gesture at the problem",
+        );
+        // The ordered computation lives in the stages that grade a metric, where the
+        // model actually acts on it — a standing rule alone went 0 for 6.
+        for stage in [Stage::Modeling, Stage::EvaluationAndMonitoring] {
+            let p = system_prompt(Track::Ml, Level::Senior, stage);
+            assert!(p.contains("100% minus the percentage"), "{stage:?} lost the formula");
+            assert!(p.contains("Do not convert it to a fraction"), "{stage:?} lost the unit warning");
+            assert!(p.contains("your first sentence"), "{stage:?} no longer fixes where the answer goes");
+        }
         assert!(p.contains("baseline"), "the ML rules lost the baseline rule");
         assert!(p.contains("leakage"), "the ML rules lost the leakage rule");
         assert!(p.contains("machine learning engineer"), "wrong interviewer in the room");
 
         let classic = system_prompt(Track::Classic, Level::Senior, Stage::DeepDive);
-        assert!(!classic.contains("class balance"), "ML rules leaked into a classic round");
+        assert!(!classic.contains("most common class"), "ML rules leaked into a classic round");
     }
 
 }

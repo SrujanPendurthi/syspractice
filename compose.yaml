@@ -9,8 +9,10 @@
 # what makes it survive `docker compose down`. `down -v` deletes it.
 #
 # On a Mac, Docker cannot reach the GPU, so the `ollama` container runs the model on the
-# CPU: a critique measured 122s here against 41s through Ollama running natively. If Ollama
-# is installed on the host with the same model, point the app at it instead:
+# CPU: a classic critique measured 122s here against 41s through Ollama running natively,
+# and ML critiques mostly never finished — four of six were still reasoning at ten
+# minutes. If Ollama is installed on the host with the same model, point the app at it,
+# and start that Ollama with OLLAMA_CONTEXT_LENGTH=16384 or it truncates long prompts:
 #
 #   LLAMA_SERVER_URL=http://host.docker.internal:11434 docker compose up -d --no-deps app
 #
