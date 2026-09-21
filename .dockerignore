@@ -1,0 +1,17 @@
+# Build inputs only. Anything else in the context is uploaded to the daemon on every
+# build and can land in an intermediate layer and the build cache — including a local
+# syspractice.db, which holds emails, password hashes and live session rows.
+#
+# Every pattern is `**/`-prefixed on purpose. A bare `*.db` only matches at the root of
+# the context, so `backend/syspractice.db` sailed straight through it.
+.git
+.claude
+**/.DS_Store
+**/.env*
+backend/target
+frontend/node_modules
+frontend/dist
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.tsbuildinfo

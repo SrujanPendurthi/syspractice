@@ -1,0 +1,85 @@
+# The whole stack: `docker compose up --build`, then http://localhost:8787.
+#
+#   app     the backend, serving the built frontend. The only published port.
+#   ollama  the model runner. Deliberately not published — it has no authentication,
+#           so anything that can reach it can spend the GPU. Only `app` talks to it.
+#   model   a one-shot job that pulls the model into ollama's volume, then exits.
+#
+# The database is SQLite in the `data` volume. It has no server to run; the volume is
+# what makes it survive `docker compose down`. `down -v` deletes it.
+#
+# On a Mac, Docker cannot reach the GPU, so the `ollama` container runs the model on the
+# CPU: a critique measured 122s here against 41s through Ollama running natively. If Ollama
+# is installed on the host with the same model, point the app at it instead:
+#
+#   LLAMA_SERVER_URL=http://host.docker.internal:11434 docker compose up -d --no-deps app
+#
+# `--no-deps` stops it starting the containerized ollama as well, which would otherwise sit
+# idle holding memory. The override lasts until the next plain `up`; put the line in a
+# `.env` file beside this one to make it stick. The host must have the same model tag.
+#
+# Critiques auto-run after 20s of quiet and are aborted by the next edit, so at 122s most
+# of them never finish. On Linux with an NVIDIA GPU, give `ollama` a device reservation.
+
+# One definition of which model to use. The app asks Ollama for it by name and the
+# `model` job pulls it; if those two ever named different models, every critique would
+# 404 against a model that was never downloaded.
+x-model: &model ${SYSPRACTICE_MODEL:-hf.co/openbmb/MiniCPM5-2B-GGUF:Q4_K_M}
+
+services:
+  app:
+    build: .
+    # Loopback only. This is a local stack; exposing it on the LAN is a deliberate
+    # change to make, not a default to inherit.
+    ports:
+      - "127.0.0.1:${SYSPRACTICE_PORT:-8787}:8787"
+    environment:
+      LLAMA_SERVER_URL: ${LLAMA_SERVER_URL:-http://ollama:11434}
+      SYSPRACTICE_MODEL: *model
+      SYSPRACTICE_CRITIQUE_QUOTA: ${SYSPRACTICE_CRITIQUE_QUOTA:-60}
+      # Off for plain http://localhost, where Safari refuses to store a Secure cookie
+      # and every sign-in silently fails. Anything served over TLS must set this to 1.
+      SYSPRACTICE_SECURE_COOKIES: ${SYSPRACTICE_SECURE_COOKIES:-0}
+      SYSPRACTICE_TRUST_PROXY: ${SYSPRACTICE_TRUST_PROXY:-0}
+    volumes:
+      - data:/data
+    # The binary is PID 1 and installs no signal handler, and PID 1 with no handler
+    # ignores SIGTERM — so without this every stop waited out the timeout and ended in a
+    # SIGKILL, cutting a streaming critique off mid-sentence. `init` puts tini in front,
+    # which does handle it.
+    init: true
+    # Not gated on the model finishing its download: browsing, drawing and saving all
+    # work without a runner, and critique answers 502 until the model is there.
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:0.30.10
+    environment:
+      # Ollama caps every model at 4096 tokens unless the *server* is told otherwise,
+      # and overflow truncates from the front — dropping the system prompt. The request
+      # cannot change this; only this variable can. Same value `./dev` uses.
+      OLLAMA_CONTEXT_LENGTH: "16384"
+    volumes:
+      - models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  model:
+    image: ollama/ollama:0.30.10
+    environment:
+      OLLAMA_HOST: ollama:11434
+    entrypoint: ["ollama", "pull", *model]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  data:
+  models:
