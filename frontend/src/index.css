@@ -234,14 +234,6 @@ html[data-motion='reduced'] *::after {
   stroke: var(--color-accent);
 }
 
-.react-flow__edge-text {
-  fill: var(--color-ink-dim);
-}
-
-.react-flow__edge-textbg {
-  fill: var(--color-page);
-}
-
 .react-flow__handle {
   background: var(--color-ink-faint);
   border-color: var(--color-page);

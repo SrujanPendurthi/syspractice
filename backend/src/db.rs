@@ -194,6 +194,9 @@ pub async fn create_attempt(
     Ok(row.0)
 }
 
+/// A board submitted to a match is frozen here, not in a handler: it is what the judge
+/// grades and what Compare boards shows, and the same attempt can be reopened from the
+/// problem's own sidebar. `NotFound` tells the client to save its edits as a new attempt.
 pub async fn update_attempt(
     pool: &SqlitePool,
     user_id: i64,
@@ -205,7 +208,9 @@ pub async fn update_attempt(
     let json = serde_json::to_string(topology).expect("Topology always serializes");
     let res = sqlx::query(
         "UPDATE attempts SET topology = ?, notes = ?, stage = ?, updated_at = datetime('now')
-         WHERE id = ? AND user_id = ?",
+         WHERE id = ? AND user_id = ?
+           AND NOT EXISTS (SELECT 1 FROM matches m
+                           WHERE m.host_attempt_id = attempts.id OR m.guest_attempt_id = attempts.id)",
     )
     .bind(json)
     .bind(notes)
@@ -942,6 +947,52 @@ pub async fn match_designs(
     Ok((parse(ht, hn)?, parse(gt, gn)?))
 }
 
+#[derive(Debug, Serialize)]
+pub struct Board {
+    pub topology: Topology,
+    pub notes: String,
+}
+
+/// Both boards of a finished match, from one player's side of the table.
+///
+/// Labelled by whose they are relative to the viewer, not by host/guest and never by
+/// attempt id: an id is a handle to go and read an attempt with, and this payload exists
+/// only once there is nothing left to hide — it should not hand out a key that outlives
+/// that. `None` is a side that never submitted.
+#[derive(Debug, Serialize)]
+pub struct MatchBoards {
+    pub yours: Option<Board>,
+    pub opponents: Option<Board>,
+}
+
+/// The two designs, once the verdict is in, to the two people who drew them.
+///
+/// The gate is the verdict rather than the deadline: until the judge has read both boards
+/// a submitted design is still a hint to whoever has not finished, and a walkover gets its
+/// verdict the moment the clock stops anyway. Non-participant and not-yet-graded are one
+/// `NotFound`, like every other ownership miss — whether that match exists, or how far it
+/// has got, is not the asker's business.
+pub async fn match_boards(
+    pool: &SqlitePool,
+    viewer_id: i64,
+    match_id: i64,
+) -> Result<MatchBoards, AppError> {
+    let (viewer_is_host,): (bool,) = sqlx::query_as(
+        "SELECT host_id = ?1 FROM matches
+         WHERE id = ?2 AND (host_id = ?1 OR guest_id = ?1) AND verdict IS NOT NULL",
+    )
+    .bind(viewer_id)
+    .bind(match_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    let (host, guest) = match_designs(pool, match_id).await?;
+    let board = |d: Option<(Topology, String)>| d.map(|(topology, notes)| Board { topology, notes });
+    let (yours, opponents) = if viewer_is_host { (host, guest) } else { (guest, host) };
+    Ok(MatchBoards { yours: board(yours), opponents: board(opponents) })
+}
+
 /// Claims the right to grade this match, or returns false because it is not gradable yet
 /// or somebody else already has it.
 ///
@@ -1479,6 +1530,66 @@ mod tests {
         assert!(json.contains("\"hostSubmitted\":true"), "the status itself must still show");
     }
 
+    #[tokio::test]
+    async fn a_submitted_match_board_cannot_be_edited_afterwards() {
+        let pool = connect(":memory:").await.unwrap();
+        let a = create_user(&pool, "a@example.com", "A", "x").await.unwrap();
+        let b = create_user(&pool, "b@example.com", "B", "x").await.unwrap();
+        let id = create_match(&pool, a.id, "url-shortener", Level::Senior, 15).await.unwrap().unwrap();
+        join_match(&pool, b.id, id).await.unwrap();
+        let attempt = create_attempt(&pool, a.id, "url-shortener", &topo(3), "submitted", Stage::Requirements)
+            .await
+            .unwrap();
+        submit_match_attempt(&pool, a.id, id, attempt).await.unwrap();
+
+        let edit = update_attempt(&pool, a.id, attempt, &topo(1), "rewritten", Stage::Bottlenecks).await;
+        assert!(matches!(edit, Err(AppError::NotFound)), "a submitted board was edited");
+
+        let kept = get_attempt(&pool, a.id, attempt).await.unwrap();
+        assert_eq!((kept.topology.nodes.len(), kept.notes.as_str()), (3, "submitted"));
+
+        // An attempt no match points at is as editable as ever.
+        let free = create_attempt(&pool, a.id, "url-shortener", &topo(1), "", Stage::Requirements).await.unwrap();
+        update_attempt(&pool, a.id, free, &topo(2), "", Stage::Estimation).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_boards_open_only_to_the_players_and_only_after_the_verdict() {
+        let pool = connect(":memory:").await.unwrap();
+        let a = create_user(&pool, "a@example.com", "A", "x").await.unwrap();
+        let b = create_user(&pool, "b@example.com", "B", "x").await.unwrap();
+        let c = create_user(&pool, "c@example.com", "C", "x").await.unwrap();
+        let id = create_match(&pool, a.id, "url-shortener", Level::Senior, 15).await.unwrap().unwrap();
+        join_match(&pool, b.id, id).await.unwrap();
+
+        let attempt = create_attempt(&pool, a.id, "url-shortener", &topo(3), "host plan", Stage::Bottlenecks)
+            .await
+            .unwrap();
+        submit_match_attempt(&pool, a.id, id, attempt).await.unwrap();
+
+        // Before the verdict a submitted board is still a hint to whoever is drawing.
+        for u in [a.id, b.id, c.id] {
+            assert!(
+                matches!(match_boards(&pool, u, id).await, Err(AppError::NotFound)),
+                "user {u} saw a board before the verdict",
+            );
+        }
+
+        finish_grading(&pool, id, "B did not submit.", "host").await.unwrap();
+        assert!(matches!(match_boards(&pool, c.id, id).await, Err(AppError::NotFound)), "a stranger saw the boards");
+
+        let host_side = match_boards(&pool, a.id, id).await.unwrap();
+        assert_eq!(host_side.yours.as_ref().map(|b| b.notes.as_str()), Some("host plan"));
+        assert!(host_side.opponents.is_none(), "a side that never submitted must show as absent");
+
+        let guest_side = match_boards(&pool, b.id, id).await.unwrap();
+        assert!(guest_side.yours.is_none());
+        assert_eq!(guest_side.opponents.map(|b| b.topology.nodes.len()), Some(3));
+
+        // Same reasoning as the match view: an id here is a key to the attempt itself.
+        let json = serde_json::to_string(&match_boards(&pool, a.id, id).await.unwrap()).unwrap();
+        assert!(!json.contains(&format!("\"id\":{attempt}")) && !json.contains("ttempt"), "{json}");
+    }
 
     #[tokio::test]
     async fn an_ml_problem_is_solved_at_its_own_last_stage() {

@@ -4,6 +4,7 @@ import type {
   ConceptCard,
   Level,
   Match,
+  MatchBoards,
   Post,
   PostComment,
   PostSummary,
@@ -18,6 +19,9 @@ import type {
 /** Thrown for a 401 so callers can tell "signed out" from "broken". */
 export class Unauthorized extends Error {}
 
+/** Thrown for a 404, where a caller has something better to do than show the message. */
+export class NotFound extends Error {}
+
 /** Thrown for a 429. Inference is metered, so this is an expected answer, not a fault. */
 export class QuotaExceeded extends Error {}
 
@@ -26,6 +30,7 @@ async function json<T>(res: Response): Promise<T> {
     const body = await res.json().catch(() => ({ error: res.statusText }));
     const message = body.error ?? res.statusText;
     if (res.status === 401) throw new Unauthorized(message);
+    if (res.status === 404) throw new NotFound(message);
     if (res.status === 429) throw new QuotaExceeded(message);
     throw new Error(message);
   }
@@ -139,6 +144,9 @@ export const cancelMatch = (id: number) =>
 /** Final — the board cannot be edited afterwards. Returns the match, graded if it is ready. */
 export const submitMatch = (id: number, topology: Topology, notes: string) =>
   post(`/api/matches/${id}/submit`, { topology, notes }).then(json<Match>);
+
+export const loadMatchBoards = (id: number) =>
+  send(`/api/matches/${id}/boards`).then(json<MatchBoards>);
 
 // --- accounts ---------------------------------------------------------------
 
