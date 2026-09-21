@@ -202,9 +202,9 @@ newest-first with no ranking, and there is no report queue. Threading and a hot 
 the two most likely first additions; a report queue is not worth a table until somebody is
 actually reading it.
 
-The ML track ships with ten problems against the classic track's twenty-four, and its
+The ML track ships with eighteen problems (4 Easy, 9 Medium, 5 Hard) against the classic track's twenty-four, and its
 concepts cover its Hard problems but not every rubric line — `the_hardest_scenarios_have_something_to_read`
-only asserts that _a_ concept names a scenario, not that it answers it.
+only asserts that _a_ concept names a scenario, not that it answers it. `voice-search` is the clearest gap: nothing teaches vocabulary biasing or per-accent evaluation.
 
 ## Parent repo note
 
