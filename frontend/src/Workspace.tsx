@@ -5,7 +5,7 @@ import { AuthPage } from './AuthPage';
 import { Canvas } from './Canvas';
 import { CritiquePanel } from './CritiquePanel';
 import { MatchPanel } from './MatchPanel';
-import { listAttempts, listConcepts, listScenarios, loadAttempt, saveAttempt, updateAttempt, Unauthorized } from './api';
+import { listAttempts, listConcepts, listScenarios, loadAttempt, NotFound, saveAttempt, updateAttempt, Unauthorized } from './api';
 import { useAuth } from './useAuth';
 import {
   FIRST_STAGE,
@@ -134,9 +134,15 @@ export function Workspace({ scenarioId, onBack, matchId, level: fixedLevel }: Wo
   const persist = useCallback(async (at: Stage) => {
     if (!scenario || !user) return null;
     const topology = getTopology();
+    const fresh = () => saveAttempt(scenario.id, topology, notes, at);
+    // A board submitted to a match refuses edits (so does one deleted elsewhere). Carrying
+    // on from it is practice, not a change to what was judged, so it forks.
     const { id } = attemptId
-      ? await updateAttempt(attemptId, topology, notes, at)
-      : await saveAttempt(scenario.id, topology, notes, at);
+      ? await updateAttempt(attemptId, topology, notes, at).catch((e) => {
+          if (e instanceof NotFound) return fresh();
+          throw e;
+        })
+      : await fresh();
     setAttemptId(id);
     setAttempts(await listAttempts());
     return id;
@@ -317,7 +323,7 @@ export function Workspace({ scenarioId, onBack, matchId, level: fixedLevel }: Wo
           <ul className="mt-2 space-y-0.5 text-xs text-ink-dim">
             <li>Drag a box to move it</li>
             <li>Drag handle to handle to connect two boxes</li>
-            <li>Double-click a box or arrow to rename it</li>
+            <li>Double-click a box or arrow, or focus it and press Enter, to rename it</li>
             <li>Select and press Delete to remove</li>
           </ul>
         </Section>

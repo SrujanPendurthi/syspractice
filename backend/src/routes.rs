@@ -94,6 +94,7 @@ pub fn router(state: AppState) -> Router {
         .route("/matches/{id}/join", post(join_match))
         .route("/matches/{id}/cancel", post(cancel_match))
         .route("/matches/{id}/submit", post(submit_match))
+        .route("/matches/{id}/boards", get(match_boards))
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
@@ -707,6 +708,17 @@ async fn get_match(
         Some(u) => Ok(Json(grade_if_ready(&s, id, &u).await?)),
         None => Ok(Json(db::get_match(&s.pool, id).await?)),
     }
+}
+
+/// Both boards, side by side, once the verdict is in. A separate endpoint rather than two
+/// more fields on the match view, so that `MatchView` — which both players poll all race
+/// long — never has a shape that could carry a board.
+async fn match_boards(
+    State(s): State<AppState>,
+    AuthUser(user): AuthUser,
+    AppPath(id): AppPath<i64>,
+) -> Result<impl IntoResponse, AppError> {
+    Ok(Json(db::match_boards(&s.pool, user.id, id).await?))
 }
 
 /// Grades the match if it is ready and nobody else has claimed it, then returns it.

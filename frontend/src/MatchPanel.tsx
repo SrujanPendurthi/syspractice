@@ -1,7 +1,8 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { loadMatch, submitMatch, QuotaExceeded, Unauthorized } from './api';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { loadMatch, loadMatchBoards, submitMatch, QuotaExceeded, Unauthorized } from './api';
+import { Canvas } from './Canvas';
 import { countdown, parseSqlTime } from './time';
-import type { Match, Topology } from './types';
+import { fromTopology, type Board, type Match, type MatchBoards, type Topology } from './types';
 import { useAuth } from './useAuth';
 
 interface MatchPanelProps {
@@ -42,6 +43,12 @@ export const MatchPanel = memo(function MatchPanel({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const [comparing, setComparing] = useState(false);
+  const compareButton = useRef<HTMLButtonElement>(null);
+  const closeCompare = useCallback(() => {
+    setComparing(false);
+    compareButton.current?.focus();
+  }, []);
 
   // A ref rather than reading `match`, so `refresh` keeps one identity for the life of the
   // match. Depending on the state it sets would give every successful poll a new callback,
@@ -66,14 +73,16 @@ export const MatchPanel = memo(function MatchPanel({
     void refresh();
   }, [refresh]);
 
+  const settled = !!match?.verdict || !!match?.cancelled;
+
   // One second for the clock, five for the server. Separated because the countdown is
-  // arithmetic on a timestamp we already have — it does not need the network.
+  // arithmetic on a timestamp we already have — it does not need the network. Stopped once
+  // settled: nothing shows the clock then, and each tick would re-render the boards.
   useEffect(() => {
+    if (settled) return;
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
-  }, []);
-
-  const settled = !!match?.verdict || !!match?.cancelled;
+  }, [settled]);
   useEffect(() => {
     if (settled) return;
     const t = setInterval(() => void refresh(), POLL_MS);
@@ -183,6 +192,16 @@ export const MatchPanel = memo(function MatchPanel({
             <p className="mt-2 whitespace-pre-wrap text-sm leading-[1.7] text-ink">
               {match.verdict}
             </p>
+            <button
+              ref={compareButton}
+              onClick={() => setComparing(true)}
+              className="mt-4 w-full rounded bg-accent px-3 py-2 text-sm font-medium text-accent-ink hover:brightness-110"
+            >
+              Compare boards
+            </button>
+            {comparing && (
+              <CompareBoards matchId={matchId} opponent={opponent} onClose={closeCompare} />
+            )}
           </>
         ) : match.cancelled ? (
           <p className="text-sm text-ink-dim">This challenge was cancelled.</p>
@@ -232,6 +251,88 @@ export const MatchPanel = memo(function MatchPanel({
     </Panel>
   );
 });
+
+/**
+ * Both designs side by side, once the verdict is in — stacked on a narrow screen.
+ *
+ * Fetched from its own endpoint rather than riding on the match: the match view is polled
+ * all race long and must never have a shape that could carry a board. The server answers
+ * only once there is a verdict, so there is no "too early" state to draw here.
+ *
+ * Absolute, like the sign-in overlay, so it covers the workspace and leaves the app bar.
+ */
+function CompareBoards({ matchId, opponent, onClose }: { matchId: number; opponent: string; onClose: () => void }) {
+  const { clear } = useAuth();
+  const [boards, setBoards] = useState<MatchBoards | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    loadMatchBoards(matchId)
+      .then(setBoards)
+      .catch((e) => {
+        if (e instanceof Unauthorized) clear();
+        setError((e as Error).message);
+      });
+  }, [matchId, clear]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Compare boards"
+      // On the dialog, not the window: a window listener also reached the appearance menu's
+      // own Escape handler and closed that too.
+      onKeyDown={(e) => {
+        if (e.key !== 'Escape') return;
+        e.stopPropagation();
+        onClose();
+      }}
+      className="absolute inset-0 z-30 flex flex-col bg-page text-ink"
+    >
+      <div className="flex items-center justify-between border-b border-line px-4 py-2">
+        <h2 className="text-base font-semibold">Compare boards</h2>
+        <button autoFocus onClick={onClose} className="text-sm text-accent hover:underline">
+          Back to the verdict
+        </button>
+      </div>
+      {error ? (
+        <p className="p-4 text-sm text-hard-ink">{error}</p>
+      ) : !boards ? (
+        <p className="p-4 text-sm text-ink-dim">Loading boards…</p>
+      ) : (
+        <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-2 divide-y divide-line lg:grid-cols-2 lg:grid-rows-1 lg:divide-x lg:divide-y-0">
+          <BoardView title="Yours" board={boards.yours} />
+          <BoardView title={`${opponent}'s`} board={boards.opponents} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BoardView({ title, board }: { title: string; board: Board | null }) {
+  // The panel re-renders every second for its clock. Without the memo each tick hands
+  // React Flow a fresh copy of the board to reconcile.
+  const graph = useMemo(() => (board ? fromTopology(board.topology) : null), [board]);
+  return (
+    <section className="flex min-h-0 flex-col">
+      <h3 className="border-b border-line px-4 py-1.5 text-sm font-medium text-ink-dim">{title}</h3>
+      {graph ? (
+        <>
+          <div className="min-h-0 flex-1">
+            <Canvas readOnly nodes={graph.nodes} edges={graph.edges} />
+          </div>
+          {board?.notes && (
+            <p className="max-h-28 overflow-y-auto border-t border-line px-4 py-2 text-sm whitespace-pre-wrap text-ink-dim">
+              {board.notes}
+            </p>
+          )}
+        </>
+      ) : (
+        <p className="p-4 text-sm text-ink-dim">Did not submit.</p>
+      )}
+    </section>
+  );
+}
 
 function Panel({ children }: { children: React.ReactNode }) {
   return (

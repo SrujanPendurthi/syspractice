@@ -324,3 +324,18 @@ export interface Match {
   winner: 'host' | 'guest' | 'draw' | null;
   createdAt: string;
 }
+
+/** Mirror of `Board` in `backend/src/db.rs`. */
+export interface Board {
+  topology: Topology;
+  notes: string;
+}
+
+/**
+ * Mirror of `MatchBoards` in `backend/src/db.rs`: both designs, once the verdict is in.
+ * Labelled relative to the reader, never by attempt id. `null` is a side that did not submit.
+ */
+export interface MatchBoards {
+  yours: Board | null;
+  opponents: Board | null;
+}
