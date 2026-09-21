@@ -263,6 +263,9 @@ export interface Flashcard {
   front: string;
 }
 
+/** Mirror of `PostSort` in `backend/src/db.rs`. */
+export type PostSort = 'hot' | 'new';
+
 /** Mirror of `PostSummary` in `backend/src/db.rs` — the discussion index, no bodies. */
 export interface PostSummary {
   id: number;
@@ -285,6 +288,10 @@ export interface Post extends Omit<PostSummary, 'comments'> {
 /** Mirror of `Comment` in `backend/src/db.rs`. */
 export interface PostComment {
   id: number;
+  /** Null for a top-level comment. */
+  parentId: number | null;
+  /** A removed comment kept only because live replies hang beneath it. Body and author are blank. */
+  deleted: boolean;
   body: string;
   author: string;
   authorId: number;

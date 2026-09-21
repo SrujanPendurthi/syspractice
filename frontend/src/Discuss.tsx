@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   createComment,
   createPost,
@@ -10,8 +10,9 @@ import {
   Unauthorized,
   votePost,
 } from './api';
+import { Segmented } from './Segmented';
 import { ago } from './time';
-import type { Post, PostComment, PostSummary, Scenario } from './types';
+import type { Post, PostComment, PostSort, PostSummary, Scenario } from './types';
 import { useAuth } from './useAuth';
 
 interface DiscussProps {
@@ -32,6 +33,11 @@ export function Discuss({ postId, onOpen, onOpenScenario, onSignIn }: DiscussPro
   const [filter, setFilter] = useState(
     () => new URLSearchParams(window.location.search).get('scenario') ?? '',
   );
+  // Same for the sort. Hot is the default and stays out of the URL, so the links the
+  // workspace builds keep working unchanged.
+  const [sort, setSort] = useState<PostSort>(() =>
+    new URLSearchParams(window.location.search).get('sort') === 'new' ? 'new' : 'hot',
+  );
 
   useEffect(() => {
     listScenarios().then(setScenarios).catch(() => undefined);
@@ -42,12 +48,25 @@ export function Discuss({ postId, onOpen, onOpenScenario, onSignIn }: DiscussPro
     [scenarios],
   );
 
+  // replaceState rather than navigate(): the filter and sort should be in a shareable URL,
+  // but routing through `useRoute` would set its path to one carrying a query string and
+  // stop `/discuss` matching.
+  const writeQuery = (scenario: string, order: PostSort) => {
+    const q = new URLSearchParams({
+      ...(scenario && { scenario }),
+      ...(order !== 'hot' && { sort: order }),
+    }).toString();
+    window.history.replaceState(null, '', q ? `/discuss?${q}` : '/discuss');
+  };
+
   const changeFilter = (next: string) => {
     setFilter(next);
-    // replaceState rather than navigate(): the filter should be in a shareable URL, but
-    // routing through `useRoute` would set its path to one carrying a query string and
-    // stop `/discuss` matching.
-    window.history.replaceState(null, '', next ? `/discuss?scenario=${next}` : '/discuss');
+    writeQuery(next, sort);
+  };
+
+  const changeSort = (next: PostSort) => {
+    setSort(next);
+    writeQuery(filter, next);
   };
 
   return (
@@ -56,10 +75,12 @@ export function Discuss({ postId, onOpen, onOpenScenario, onSignIn }: DiscussPro
         {postId === null ? (
           <Index
             filter={filter}
+            sort={sort}
             scenarios={scenarios}
             scenarioTitle={title}
             signedIn={!!user}
             onFilter={changeFilter}
+            onSort={changeSort}
             onOpen={onOpen}
             onSignIn={onSignIn}
           />
@@ -79,18 +100,22 @@ export function Discuss({ postId, onOpen, onOpenScenario, onSignIn }: DiscussPro
 
 function Index({
   filter,
+  sort,
   scenarios,
   scenarioTitle,
   signedIn,
   onFilter,
+  onSort,
   onOpen,
   onSignIn,
 }: {
   filter: string;
+  sort: PostSort;
   scenarios: Scenario[];
   scenarioTitle: (id: string) => string;
   signedIn: boolean;
   onFilter: (id: string) => void;
+  onSort: (sort: PostSort) => void;
   onOpen: (id: number) => void;
   onSignIn: () => void;
 }) {
@@ -99,13 +124,13 @@ function Index({
   const [composing, setComposing] = useState(false);
 
   const refresh = useCallback(() => {
-    listPosts(filter || undefined)
+    listPosts(filter, sort)
       .then((p) => {
         setPosts(p);
         setError(null);
       })
       .catch((e) => setError(e.message));
-  }, [filter]);
+  }, [filter, sort]);
 
   useEffect(refresh, [refresh]);
 
@@ -126,6 +151,16 @@ function Index({
             </option>
           ))}
         </select>
+        <Segmented
+          label="Sort threads"
+          hideLabel
+          value={sort}
+          onChange={onSort}
+          options={[
+            { value: 'hot', label: 'Hot' },
+            { value: 'new', label: 'New' },
+          ]}
+        />
 
         {signedIn ? (
           <button
@@ -139,7 +174,7 @@ function Index({
             {composing ? 'Cancel' : 'New post'}
           </button>
         ) : (
-          <button onClick={onSignIn} className="ml-auto text-sm text-easy-ink">
+          <button onClick={onSignIn} className="ml-auto text-sm text-accent hover:underline">
             Sign in to post
           </button>
         )}
@@ -360,8 +395,11 @@ function Thread({
   const [post, setPost] = useState<Post | null>(null);
   const [comments, setComments] = useState<PostComment[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [draft, setDraft] = useState('');
-  const [busy, setBusy] = useState(false);
+  /** The comment whose inline reply box is open. One at a time. */
+  const [replyingTo, setReplyingTo] = useState<number | null>(null);
+  /** Unsent text per box (`null` is the top-level one), so opening another reply box
+   * unmounts this one without throwing its draft away. */
+  const drafts = useRef(new Map<number | null, string>());
 
   const refresh = useCallback(() => {
     loadPost(postId)
@@ -373,6 +411,21 @@ function Thread({
   }, [postId]);
 
   useEffect(refresh, [refresh]);
+
+  // The server sends the thread flat, each row with its parent; this groups it. A reply
+  // whose parent is missing (only possible past the 500-row cap) is shown at the top
+  // level rather than silently dropped.
+  const byParent = useMemo(() => {
+    const ids = new Set(comments.map((c) => c.id));
+    const map = new Map<number | null, PostComment[]>();
+    for (const c of comments) {
+      const key = c.parentId !== null && ids.has(c.parentId) ? c.parentId : null;
+      map.set(key, [...(map.get(key) ?? []), c]);
+    }
+    return map;
+  }, [comments]);
+  const byId = useMemo(() => new Map(comments.map((c) => [c.id, c])), [comments]);
+  const live = comments.filter((c) => !c.deleted).length;
 
   // Author or moderator. The server decides the same thing in SQL — this only controls
   // whether the button is worth showing.
@@ -387,19 +440,92 @@ function Thread({
     }
   };
 
-  const comment = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
+  /** Throws on failure, so the form that sent it can say so beside itself. */
+  const send = async (body: string, parentId: number | null) => {
     try {
-      await createComment(postId, draft);
-      setDraft('');
-      refresh();
+      await createComment(postId, body, parentId);
     } catch (err) {
-      setError((err as Error).message);
       if (err instanceof Unauthorized) onSignIn();
-    } finally {
-      setBusy(false);
+      throw err;
     }
+    // Only a reply closes its own box. A top-level comment leaves any open reply alone.
+    if (parentId !== null) setReplyingTo(null);
+    refresh();
+  };
+
+  const reply = (id: number) => (user ? setReplyingTo((open) => (open === id ? null : id)) : onSignIn());
+
+  const renderComments = (parent: number | null, depth: number): React.ReactNode => {
+    const children = byParent.get(parent);
+    if (!children) return null;
+    // Past MAX_INDENT the thread stops stepping right — on a phone five levels of
+    // indentation leave a column a few words wide. Replies there say who they answer
+    // instead, since position no longer does.
+    const indent = depth < MAX_INDENT;
+    return (
+      <ul className={depth === 0 ? 'mt-6 space-y-5' : `mt-4 space-y-4 ${indent ? '' : '-ml-3.5'}`}>
+        {children.map((c) => {
+          const parentComment = c.parentId === null ? undefined : byId.get(c.parentId);
+          return (
+            <li key={c.id} className="border-l-2 border-line pl-3">
+              <p className="text-sm text-ink-dim">
+                {c.deleted ? (
+                  <span className="text-ink-faint">[deleted]</span>
+                ) : (
+                  <>
+                    {!indent && parentComment && (
+                      <span className="text-ink-faint">
+                        <span aria-hidden="true">↳ </span>
+                        <span className="sr-only">reply to </span>
+                        {parentComment.deleted ? '[deleted]' : parentComment.author}
+                        {' · '}
+                      </span>
+                    )}
+                    {c.author} · {ago(c.createdAt)}
+                    {' · '}
+                    <button
+                      onClick={() => reply(c.id)}
+                      aria-expanded={replyingTo === c.id}
+                      className="text-accent hover:underline"
+                    >
+                      Reply
+                    </button>
+                    {canRemove(c.authorId) && (
+                      <>
+                        {' · '}
+                        <button
+                          onClick={() => void remove(() => deleteComment(c.id), refresh)}
+                          className="text-hard-ink"
+                        >
+                          Delete
+                        </button>
+                      </>
+                    )}
+                  </>
+                )}
+              </p>
+              {/* Text, never markup — see the post body. */}
+              {!c.deleted && (
+                <p className="mt-1 whitespace-pre-wrap text-base leading-relaxed text-ink">
+                  {c.body}
+                </p>
+              )}
+              {replyingTo === c.id && (
+                <CommentForm
+                  draftKey={c.id}
+                  drafts={drafts.current}
+                  placeholder={`Reply to ${c.author}`}
+                  submitLabel="Reply"
+                  onSubmit={(body) => send(body, c.id)}
+                  onCancel={() => setReplyingTo(null)}
+                />
+              )}
+              {renderComments(c.id, depth + 1)}
+            </li>
+          );
+        })}
+      </ul>
+    );
   };
 
   if (error && !post) return <p className="text-sm text-hard-ink">{error}</p>;
@@ -455,28 +581,17 @@ function Thread({
 
       <section className="mt-8 border-t border-line pt-5">
         <h2 className="text-lg font-semibold">
-          {comments.length} {comments.length === 1 ? 'comment' : 'comments'}
+          {live} {live === 1 ? 'comment' : 'comments'}
         </h2>
 
         {user ? (
-          <form onSubmit={comment} className="mt-3">
-            <textarea
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              maxLength={MAX_COMMENT}
-              required
-              rows={3}
-              placeholder="Add a comment"
-              className="w-full resize-y rounded border border-line bg-transparent p-2.5 text-base leading-relaxed outline-none focus:border-ink-faint"
-            />
-            <button
-              type="submit"
-              disabled={busy}
-              className="mt-2 rounded bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink disabled:opacity-50"
-            >
-              {busy ? 'Posting…' : 'Comment'}
-            </button>
-          </form>
+          <CommentForm
+            draftKey={null}
+            drafts={drafts.current}
+            placeholder="Add a comment"
+            submitLabel="Comment"
+            onSubmit={(body) => send(body, null)}
+          />
         ) : (
           <p className="mt-3 text-sm text-ink-dim">
             <button onClick={onSignIn} className="text-accent underline underline-offset-2">
@@ -488,30 +603,90 @@ function Thread({
 
         {error && <p className="mt-3 text-sm text-hard-ink">{error}</p>}
 
-        <ul className="mt-6 space-y-5">
-          {comments.map((c) => (
-            <li key={c.id} className="border-l-2 border-line pl-3">
-              <p className="text-sm text-ink-dim">
-                {c.author} · {ago(c.createdAt)}
-                {canRemove(c.authorId) && (
-                  <>
-                    {' · '}
-                    <button
-                      onClick={() => void remove(() => deleteComment(c.id), refresh)}
-                      className="text-hard-ink"
-                    >
-                      Delete
-                    </button>
-                  </>
-                )}
-              </p>
-              <p className="mt-1 whitespace-pre-wrap text-base leading-relaxed text-ink">
-                {c.body}
-              </p>
-            </li>
-          ))}
-        </ul>
+        {renderComments(null, 0)}
       </section>
     </article>
+  );
+}
+
+/** How many levels of reply step to the right before the thread stops indenting. */
+const MAX_INDENT = 4;
+
+/** The top-level comment box and every inline reply box. Its draft is written through to
+ * `drafts`, so it survives the box being closed by opening another; Cancel discards it.
+ * A failed send is reported here, beside the box, rather than at the top of the thread. */
+function CommentForm({
+  draftKey,
+  drafts,
+  placeholder,
+  submitLabel,
+  onSubmit,
+  onCancel,
+}: {
+  draftKey: number | null;
+  drafts: Map<number | null, string>;
+  placeholder: string;
+  submitLabel: string;
+  onSubmit: (body: string) => Promise<void>;
+  onCancel?: () => void;
+}) {
+  const [draft, setDraftState] = useState(() => drafts.get(draftKey) ?? '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const setDraft = (text: string) => {
+    setDraftState(text);
+    if (text) drafts.set(draftKey, text);
+    else drafts.delete(draftKey);
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await onSubmit(draft);
+      setDraft('');
+    } catch (err) {
+      setError((err as Error).message);
+    }
+    setBusy(false);
+  };
+
+  return (
+    <form onSubmit={submit} className="mt-3">
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        maxLength={MAX_COMMENT}
+        required
+        rows={3}
+        autoFocus={!!onCancel}
+        placeholder={placeholder}
+        className="w-full resize-y rounded border border-line bg-transparent p-2.5 text-base leading-relaxed outline-none focus:border-ink-faint"
+      />
+      <div className="mt-2 flex items-center gap-3">
+        <button
+          type="submit"
+          disabled={busy}
+          className="rounded bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink disabled:opacity-50"
+        >
+          {busy ? 'Posting…' : submitLabel}
+        </button>
+        {onCancel && (
+          <button
+            type="button"
+            onClick={() => {
+              drafts.delete(draftKey);
+              onCancel();
+            }}
+            className="text-sm text-ink-dim hover:text-ink"
+          >
+            Cancel
+          </button>
+        )}
+      </div>
+      {error && <p className="mt-2 text-sm text-hard-ink">{error}</p>}
+    </form>
   );
 }
