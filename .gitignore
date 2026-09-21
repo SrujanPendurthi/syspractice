@@ -10,3 +10,6 @@ backend/target/
 frontend/node_modules/
 frontend/dist/
 frontend/*.tsbuildinfo
+
+# Per-machine compose overrides; .env.mac is the committed template
+.env

@@ -14,11 +14,12 @@
 # minutes. If Ollama is installed on the host with the same model, point the app at it,
 # and start that Ollama with OLLAMA_CONTEXT_LENGTH=16384 or it truncates long prompts:
 #
-#   LLAMA_SERVER_URL=http://host.docker.internal:11434 docker compose up -d --no-deps app
+#   cp .env.mac .env && docker compose up --build -d
 #
-# `--no-deps` stops it starting the containerized ollama as well, which would otherwise sit
-# idle holding memory. The override lasts until the next plain `up`; put the line in a
-# `.env` file beside this one to make it stick. The host must have the same model tag.
+# `.env.mac` points the app at http://host.docker.internal:11434 and scales the ollama and
+# model services to zero, so no idle CPU runner holds memory. Docker Desktop forwards
+# host.docker.internal to the host's loopback, so the host Ollama stays on 127.0.0.1 and is
+# never exposed to the network. The host must have the same model tag pulled.
 #
 # Critiques auto-run after 20s of quiet and are aborted by the next edit, so at 122s most
 # of them never finish. On Linux with an NVIDIA GPU, give `ollama` a device reservation.
@@ -55,11 +56,16 @@ services:
     # Not gated on the model finishing its download: browsing, drawing and saving all
     # work without a runner, and critique answers 502 until the model is there.
     depends_on:
-      - ollama
+      ollama:
+        condition: service_started
+        # So `.env.mac`'s zero replicas leaves nothing for the app to wait on.
+        required: false
     restart: unless-stopped
 
   ollama:
     image: ollama/ollama:0.30.10
+    # 0 when the model runs on the host instead; see `.env.mac`.
+    scale: ${SYSPRACTICE_RUNNER_REPLICAS:-1}
     environment:
       # Ollama caps every model at 4096 tokens unless the *server* is told otherwise,
       # and overflow truncates from the front — dropping the system prompt. The request
@@ -76,6 +82,7 @@ services:
 
   model:
     image: ollama/ollama:0.30.10
+    scale: ${SYSPRACTICE_RUNNER_REPLICAS:-1}
     environment:
       OLLAMA_HOST: ollama:11434
     entrypoint: ["ollama", "pull", *model]
