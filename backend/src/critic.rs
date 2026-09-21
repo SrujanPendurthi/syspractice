@@ -100,13 +100,13 @@ how the training set is sampled, how class imbalance is handled, and what happen
 user or item seen for the first time. Ignore the model architecture entirely.",
 
             (_, Stage::Modeling) => "\
-If their notes quote an accuracy figure, do this before anything else. A model that \
-always answers \"no\" — never flags a single case — scores 100% minus the percentage of \
-positive cases. Subtract the percentage as written: if 2% are positive, 100 - 2 = 98%. \
-Do not convert it to a fraction first; that is where the answer goes wrong by a factor of \
-ten. Work that number out from their stated rate, and make your first sentence put it next \
-to their accuracy and say which is higher. If they give no positive rate, your first \
-sentence asks for it. Only then grade the rest.
+If their notes quote an accuracy figure, do this before anything else. Find the \
+percentage of positive cases in THEIR notes. A model that always answers \"no\" — never \
+flags a single case — scores 100 minus that exact percentage, subtracted as written with \
+no conversion to a fraction. Use only the number they wrote; there is no other rate. Your \
+first line must be exactly this, filled in: Always-no baseline: 100 - <their positive \
+rate> = <result>%. Your accuracy: <their accuracy>%. Then say which is higher. If they \
+give no positive rate, your first sentence asks for it. Only then grade the rest.
 
 Grade only the model choice and how it is trained. Does the model suit the data they \
 have, rather than the data they wish they had? Push on the simplest thing that could \
@@ -123,13 +123,13 @@ with no answer for the first request after a deploy has not finished. Ignore how
 model was trained.",
 
             (_, Stage::EvaluationAndMonitoring) => "\
-If their notes quote an accuracy figure, do this before anything else. A model that \
-always answers \"no\" — never flags a single case — scores 100% minus the percentage of \
-positive cases. Subtract the percentage as written: if 2% are positive, 100 - 2 = 98%. \
-Do not convert it to a fraction first; that is where the answer goes wrong by a factor of \
-ten. Work that number out from their stated rate, and make your first sentence put it next \
-to their accuracy and say which is higher. If they give no positive rate, your first \
-sentence asks for it. Only then grade the rest.
+If their notes quote an accuracy figure, do this before anything else. Find the \
+percentage of positive cases in THEIR notes. A model that always answers \"no\" — never \
+flags a single case — scores 100 minus that exact percentage, subtracted as written with \
+no conversion to a fraction. Use only the number they wrote; there is no other rate. Your \
+first line must be exactly this, filled in: Always-no baseline: 100 - <their positive \
+rate> = <result>%. Your accuracy: <their accuracy>%. Then say which is higher. If they \
+give no positive rate, your first sentence asks for it. Only then grade the rest.
 
 Grade only what happens after it ships. Which offline metric did they choose and why is \
 it a reasonable stand-in for the online one — and what would make the two disagree? How \
@@ -318,27 +318,52 @@ fn parse_delta(data: &str) -> Option<Delta> {
     None
 }
 
-pub async fn stream_critique(
-    runner_url: &str,
-    model: &str,
-    system: String,
-    prompt: String,
-) -> Result<impl Stream<Item = Result<Event, Infallible>>, AppError> {
-    let url = format!("{runner_url}/v1/chat/completions");
+/// Where the model runs, and how it is asked.
+#[derive(Clone)]
+pub struct Runner {
+    pub url: String,
+    /// llama-server ignores this and serves whatever it was started with, but Ollama
+    /// resolves it and 404s on an unknown name. Configurable via SYSPRACTICE_MODEL.
+    pub model: String,
+    /// Sent as `reasoning_effort` when set; left out entirely when not, so a runner that
+    /// does not know the field never sees it. `none` switches a reasoning model's thinking
+    /// phase off on Ollama. Note `think: false` does *not*: Ollama's OpenAI-compatible
+    /// endpoint ignores it without complaint, which is an easy way to measure nothing.
+    pub reasoning_effort: Option<String>,
+}
 
-    let resp = reqwest::Client::new()
-        .post(&url)
-        .json(&json!({
-            // llama-server ignores this and serves whatever it was started with, but Ollama
-            // resolves it and 404s on an unknown name. Configurable via SYSPRACTICE_MODEL.
-            "model": model,
-            "stream": true,
-            "temperature": 0.4,
+impl Runner {
+    fn endpoint(&self) -> String {
+        format!("{}/v1/chat/completions", self.url)
+    }
+
+    fn body(&self, stream: bool, temperature: f64, system: String, prompt: String) -> serde_json::Value {
+        let mut body = json!({
+            "model": self.model,
+            "stream": stream,
+            "temperature": temperature,
             "messages": [
                 { "role": "system", "content": system },
                 { "role": "user",   "content": prompt },
             ],
-        }))
+        });
+        if let Some(effort) = &self.reasoning_effort {
+            body["reasoning_effort"] = json!(effort);
+        }
+        body
+    }
+}
+
+pub async fn stream_critique(
+    runner: &Runner,
+    system: String,
+    prompt: String,
+) -> Result<impl Stream<Item = Result<Event, Infallible>>, AppError> {
+    let url = runner.endpoint();
+
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .json(&runner.body(true, 0.4, system, prompt))
         .send()
         .await
         .map_err(|_| AppError::Runner(url.clone()))?
@@ -497,27 +522,14 @@ pub enum Winner {
 /// The critique endpoint streams because someone is watching it arrive. A verdict is
 /// written once, stored, and read by both players — streaming it would mean two model
 /// calls producing two different answers to the same question.
-pub async fn complete(
-    runner_url: &str,
-    model: &str,
-    system: String,
-    prompt: String,
-) -> Result<String, AppError> {
-    let url = format!("{runner_url}/v1/chat/completions");
+pub async fn complete(runner: &Runner, system: String, prompt: String) -> Result<String, AppError> {
+    let url = runner.endpoint();
 
+    // Lower temperature than the critique's 0.4: the same two designs should not change
+    // places between one grading and the next.
     let body: serde_json::Value = reqwest::Client::new()
         .post(&url)
-        .json(&json!({
-            "model": model,
-            "stream": false,
-            // Lower than the critique's 0.4: the same two designs should not change places
-            // between one grading and the next.
-            "temperature": 0.2,
-            "messages": [
-                { "role": "system", "content": system },
-                { "role": "user",   "content": prompt },
-            ],
-        }))
+        .json(&runner.body(false, 0.2, system, prompt))
         .send()
         .await
         .map_err(|_| AppError::Runner(url.clone()))?
@@ -806,9 +818,12 @@ mod tests {
         // model actually acts on it — a standing rule alone went 0 for 6.
         for stage in [Stage::Modeling, Stage::EvaluationAndMonitoring] {
             let p = system_prompt(Track::Ml, Level::Senior, stage);
-            assert!(p.contains("100% minus the percentage"), "{stage:?} lost the formula");
-            assert!(p.contains("Do not convert it to a fraction"), "{stage:?} lost the unit warning");
-            assert!(p.contains("your first sentence"), "{stage:?} no longer fixes where the answer goes");
+            assert!(p.contains("100 minus that exact percentage"), "{stage:?} lost the formula");
+            assert!(p.contains("no conversion to a fraction"), "{stage:?} lost the unit warning");
+            // No worked numbers: with reasoning off the model copied the example's figure
+            // instead of the user's in 3 of 6 runs.
+            assert!(!p.contains("2% are positive"), "{stage:?} has a numeric example again");
+            assert!(p.contains("Always-no baseline: 100 -"), "{stage:?} lost the template line");
         }
         assert!(p.contains("baseline"), "the ML rules lost the baseline rule");
         assert!(p.contains("leakage"), "the ML rules lost the leakage rule");
@@ -817,5 +832,28 @@ mod tests {
         let classic = system_prompt(Track::Classic, Level::Senior, Stage::DeepDive);
         assert!(!classic.contains("most common class"), "ML rules leaked into a classic round");
     }
+
+
+    #[test]
+    fn reasoning_effort_is_only_sent_when_configured() {
+        let mut runner = Runner {
+            url: "http://runner".into(),
+            model: "m".into(),
+            reasoning_effort: None,
+        };
+        let body = runner.body(true, 0.4, "s".into(), "p".into());
+        // Absent, not null: a runner that does not know the field must never see it.
+        assert!(body.get("reasoning_effort").is_none(), "sent unasked: {body}");
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["messages"][0]["role"], "system");
+
+        runner.reasoning_effort = Some("none".into());
+        let body = runner.body(false, 0.2, "s".into(), "p".into());
+        assert_eq!(body["reasoning_effort"], "none");
+        assert_eq!(body["stream"], false);
+        assert_eq!(runner.endpoint(), "http://runner/v1/chat/completions");
+    }
+
+
 
 }

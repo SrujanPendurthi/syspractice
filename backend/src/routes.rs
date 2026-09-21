@@ -28,8 +28,7 @@ use crate::{concepts, critic, db, scenarios};
 #[derive(Clone)]
 pub struct AppState {
     pub pool: SqlitePool,
-    pub runner_url: String,
-    pub model: String,
+    pub runner: critic::Runner,
     /// Failed sign-ins, keyed by folded email.
     pub login_throttle: Arc<Throttle>,
     /// Registrations, keyed by client address. Registration has to tell you an email is
@@ -290,7 +289,7 @@ async fn critique(
     let system = critic::system_prompt(scenario.track, body.level, body.stage);
     let prompt = critic::build_prompt(scenario, &body.topology, &body.notes, body.level);
 
-    let stream = match critic::stream_critique(&s.runner_url, &s.model, system, prompt).await {
+    let stream = match critic::stream_critique(&s.runner, system, prompt).await {
         Ok(stream) => stream,
         Err(e) => {
             // No GPU time was spent, so charging for it would be charging for our own
@@ -717,7 +716,7 @@ async fn grade_if_ready(
         (&b.0, &b.1),
     );
 
-    let text = match critic::complete(&s.runner_url, &s.model, critic::judge_prompt(level), prompt).await {
+    let text = match critic::complete(&s.runner, critic::judge_prompt(level), prompt).await {
         Ok(text) => text,
         Err(e) => {
             db::release_critique(&s.pool, reservation).await?;

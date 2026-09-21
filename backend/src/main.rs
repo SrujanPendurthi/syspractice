@@ -27,6 +27,10 @@ async fn main() -> anyhow::Result<()> {
     // llama-server ignores the model name; Ollama requires a real one (e.g. "gemma4:12b").
     let model = env_or("SYSPRACTICE_MODEL", "local");
 
+    // Unset means the field is not sent at all. `none` turns off a reasoning model's
+    // thinking phase on Ollama, which is most of a critique's wall-clock time.
+    let reasoning_effort = std::env::var("SYSPRACTICE_REASONING_EFFORT").ok().filter(|v| !v.is_empty());
+
     // Safe by default. `./dev` turns it off because Safari will not store a Secure cookie
     // from http://localhost, which would leave every dev sign-in silently failing.
     let secure_cookies = env_or("SYSPRACTICE_SECURE_COOKIES", "1") != "0";
@@ -41,8 +45,11 @@ async fn main() -> anyhow::Result<()> {
     let pool = db::connect(&db_path).await?;
     let app = routes::router(AppState {
         pool,
-        runner_url: runner_url.clone(),
-        model: model.clone(),
+        runner: critic::Runner {
+            url: runner_url.clone(),
+            model: model.clone(),
+            reasoning_effort: reasoning_effort.clone(),
+        },
         login_throttle: Arc::new(auth::Throttle::new(
             auth::LOGIN_MAX,
             auth::LOGIN_WINDOW,
@@ -84,6 +91,9 @@ async fn main() -> anyhow::Result<()> {
     println!("syspractice backend on http://{addr}");
     println!("  db     {db_path}");
     println!("  model  {model} @ {runner_url}");
+    if let Some(effort) = &reasoning_effort {
+        println!("  reasoning_effort  {effort}");
+    }
     println!("  quota  {critique_quota} critiques/user/hour");
     if !secure_cookies {
         println!("  !!     cookies are not marked Secure (SYSPRACTICE_SECURE_COOKIES=0)");

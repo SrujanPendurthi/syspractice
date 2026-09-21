@@ -39,6 +39,8 @@ services:
       LLAMA_SERVER_URL: ${LLAMA_SERVER_URL:-http://ollama:11434}
       SYSPRACTICE_MODEL: *model
       SYSPRACTICE_CRITIQUE_QUOTA: ${SYSPRACTICE_CRITIQUE_QUOTA:-60}
+      # `none` turns off a reasoning model's thinking phase (Ollama); empty sends nothing.
+      SYSPRACTICE_REASONING_EFFORT: ${SYSPRACTICE_REASONING_EFFORT:-}
       # Off for plain http://localhost, where Safari refuses to store a Secure cookie
       # and every sign-in silently fails. Anything served over TLS must set this to 1.
       SYSPRACTICE_SECURE_COOKIES: ${SYSPRACTICE_SECURE_COOKIES:-0}
