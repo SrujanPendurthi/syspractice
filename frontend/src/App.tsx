@@ -1,6 +1,7 @@
 import { AppBar } from './AppBar';
 import { AuthPage } from './AuthPage';
 import { Discuss } from './Discuss';
+import { Flashcards } from './Flashcards';
 import { MatchRoom } from './MatchRoom';
 import { Learn } from './Learn';
 import { ProblemList } from './ProblemList';
@@ -12,7 +13,7 @@ import { Workspace } from './Workspace';
 
 /**
  * `/s/<scenarioId>` opens that problem, `/learn` is the concept index and
- * `/learn/<conceptId>` one article, `/discuss` and `/discuss/<postId>` are the forum,
+ * `/learn/<conceptId>` one article, `/cards` the flashcard deck, `/discuss` and `/discuss/<postId>` are the forum,
  * `/versus` is the match lobby and `/m/<matchId>` one race, `/login` is the account form,
  * anything else is the problem list. There is deliberately no redirect wall: browsing
  * problems, reading concepts and drawing on the canvas all work signed out, and only
@@ -39,6 +40,10 @@ function Routes() {
           onSignIn={() => navigate('/login')}
         />
       );
+    }
+
+    if (path === '/cards') {
+      return <Flashcards onSignIn={() => navigate('/login')} />;
     }
 
     if (path === '/discuss' || path.startsWith('/discuss/')) {

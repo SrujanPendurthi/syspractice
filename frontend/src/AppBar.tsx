@@ -23,6 +23,7 @@ interface AppBarProps {
 const SECTIONS = [
   { href: '/', label: 'Problems' },
   { href: '/learn', label: 'Concepts' },
+  { href: '/cards', label: 'Cards' },
   { href: '/discuss', label: 'Discuss' },
   { href: '/versus', label: '1v1' },
 ];

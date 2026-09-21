@@ -2,6 +2,7 @@ import type {
   AttemptSummary,
   Concept,
   ConceptCard,
+  Flashcard,
   Level,
   Match,
   Post,
@@ -92,6 +93,12 @@ export const listReads = () => send('/api/reads').then(json<string[]>);
 
 export const markRead = (id: string, read: boolean) =>
   post(`/api/concepts/${encodeURIComponent(id)}/read`, { read }).then(json<{ read: boolean }>);
+
+/** Signed in: what is due, then new cards, capped per sitting. Signed out: the whole deck. */
+export const listCards = () => send('/api/cards').then(json<Flashcard[]>);
+
+export const gradeCard = (cardId: string, correct: boolean) =>
+  post('/api/cards/grade', { cardId, correct }).then(json<{ box: number; dueAt: string }>);
 
 // --- discussion --------------------------------------------------------------
 
