@@ -45,6 +45,38 @@ pub fn for_scenario(scenario_id: &str) -> impl Iterator<Item = &'static Concept>
     CONCEPTS.iter().filter(move |c| c.scenarios.contains(&scenario_id))
 }
 
+/// A flashcard: one probe on the front, and on the back the concept it came from, which
+/// the page fetches from `/api/concepts/{id}` once per concept rather than repeating it
+/// per probe (it was ~100KB of duplicated bodies for the anonymous deck).
+///
+/// There is no answer corpus. The probes are questions about *your* design ("which path
+/// did you therefore optimise?"), so a single written answer would be wrong for most
+/// designs; the back is the material you reason from instead, which is also what keeps a
+/// second body of prose from drifting out of step with the first.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Card {
+    pub id: String,
+    pub concept_id: &'static str,
+    pub concept_title: &'static str,
+    pub front: &'static str,
+}
+
+/// Every card, in syllabus order. The id is `<concept id>:<probe index>`, which is what
+/// the schedule in `card_reviews` is keyed by: stable across deploys, and across rewording
+/// a probe, but inserting or reordering probes within a concept moves everyone's schedule
+/// onto the neighbouring question. Append new probes rather than inserting them.
+pub fn cards() -> impl Iterator<Item = Card> {
+    CONCEPTS.iter().flat_map(|c| {
+        c.probes.iter().enumerate().map(move |(i, front)| Card {
+            id: format!("{}:{i}", c.id),
+            concept_id: c.id,
+            concept_title: c.title,
+            front,
+        })
+    })
+}
+
 pub static CONCEPTS: &[Concept] = &[
     Concept {
         id: "estimation",
@@ -885,6 +917,31 @@ mod tests {
             for s in c.sections {
                 assert!(s.body.len() > 120, "{} / {} is a stub", c.id, s.heading);
             }
+        }
+    }
+
+    #[test]
+    fn every_probe_is_one_card_with_a_unique_stable_id() {
+        let mut ids: Vec<_> = cards().map(|c| c.id).collect();
+        assert_eq!(ids.len(), CONCEPTS.iter().map(|c| c.probes.len()).sum::<usize>());
+        for c in CONCEPTS {
+            assert!(cards().any(|card| card.concept_id == c.id), "{} produced no cards", c.id);
+        }
+        let count = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), count, "two cards share an id");
+
+        // The id is what schedules are stored against. If this fails, somebody inserted a
+        // probe ahead of an existing one and every user's box for it now grades a
+        // different question.
+        // Literal text on purpose: comparing against `probes[i]` would pass whatever moved.
+        for (id, front) in [
+            ("estimation:0", "What is your read-to-write ratio, and which path did you therefore optimise?"),
+            ("caching:2", "How does a write invalidate, and what does a reader see in between?"),
+        ] {
+            let card = cards().find(|c| c.id == id).unwrap_or_else(|| panic!("{id} is gone"));
+            assert_eq!(card.front, front, "{id} now points at a different probe");
         }
     }
 

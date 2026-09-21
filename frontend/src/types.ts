@@ -254,6 +254,15 @@ export interface Concept extends ConceptCard {
   probes: string[];
 }
 
+/** Mirror of `Card` in `backend/src/concepts.rs`: one probe, backed by its concept. */
+export interface Flashcard {
+  /** `<conceptId>:<probeIndex>` — what the schedule is keyed by. */
+  id: string;
+  conceptId: string;
+  conceptTitle: string;
+  front: string;
+}
+
 /** Mirror of `PostSummary` in `backend/src/db.rs` — the discussion index, no bodies. */
 export interface PostSummary {
   id: number;

@@ -82,6 +82,8 @@ pub fn router(state: AppState) -> Router {
         .route("/concepts/{id}", get(get_concept))
         .route("/concepts/{id}/read", post(mark_concept_read))
         .route("/reads", get(list_reads))
+        .route("/cards", get(list_cards))
+        .route("/cards/grade", post(grade_card))
         .route("/posts", get(list_posts).post(create_post))
         .route("/posts/{id}", get(get_post).delete(delete_post))
         .route("/posts/{id}/comments", post(create_comment))
@@ -364,6 +366,54 @@ async fn list_reads(
         None => Vec::new(),
     };
     Ok(Json(reads))
+}
+
+// --- flashcards --------------------------------------------------------------
+
+/// How many cards one sitting serves: everything due first, then new cards up to this.
+/// Without a cap a new account's first session is the whole deck, which is a reading
+/// list rather than a review.
+const CARD_SESSION: usize = 20;
+
+/// Anonymous visitors get the whole deck in syllabus order — there is no schedule to
+/// serve, so a session cap would only hide cards from them. Signed in, it is the due cards
+/// soonest first, then unseen ones. A stored id with no card behind it (a probe that has
+/// since been removed) simply never matches.
+async fn list_cards(
+    State(s): State<AppState>,
+    MaybeUser(user): MaybeUser,
+) -> Result<impl IntoResponse, AppError> {
+    let Some(u) = user else {
+        return Ok(Json(concepts::cards().collect::<Vec<_>>()));
+    };
+    let schedule = db::card_schedule(&s.pool, u.id).await?;
+    let due = schedule
+        .iter()
+        .filter(|(_, due)| *due)
+        .filter_map(|(id, _)| concepts::cards().find(|c| &c.id == id));
+    let new = concepts::cards().filter(|c| !schedule.iter().any(|(id, _)| id == &c.id));
+    Ok(Json(due.chain(new).take(CARD_SESSION).collect::<Vec<_>>()))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Grade {
+    card_id: String,
+    correct: bool,
+}
+
+async fn grade_card(
+    State(s): State<AppState>,
+    AuthUser(user): AuthUser,
+    AppJson(body): AppJson<Grade>,
+) -> Result<impl IntoResponse, AppError> {
+    // Checked against the static deck so the table cannot fill with ids that are not
+    // cards, the same reason `mark_concept_read` checks its id.
+    if !concepts::cards().any(|c| c.id == body.card_id) {
+        return Err(AppError::NotFound);
+    }
+    let (card_box, due_at) = db::grade_card(&s.pool, user.id, &body.card_id, body.correct).await?;
+    Ok(Json(json!({ "box": card_box, "dueAt": due_at })))
 }
 
 // --- discussion ---------------------------------------------------------------

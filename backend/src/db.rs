@@ -464,6 +464,58 @@ pub async fn set_concept_read(
     Ok(())
 }
 
+// --- flashcards --------------------------------------------------------------
+
+/// The highest Leitner box. Box `n` waits `2^(n-1)` days: 1, 2, 4, 8, 16.
+pub const TOP_BOX: i64 = 5;
+
+/// Every card this user has graded, soonest due first, with whether it is due now. The
+/// comparison is done in SQL so both sides are SQLite's own UTC text and nothing has to
+/// parse a zone-less timestamp.
+pub async fn card_schedule(
+    pool: &SqlitePool,
+    user_id: i64,
+) -> Result<Vec<(String, bool)>, AppError> {
+    Ok(sqlx::query_as(
+        "SELECT card_id, due_at <= datetime('now') FROM card_reviews
+         WHERE user_id = ? ORDER BY due_at",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// Got it moves a card up one box, missed it sends it back to box 1; either way it is due
+/// again after its new box's interval. One upsert, so a double-clicked grade cannot read a
+/// box and then write a stale one. A new card that is got right starts in box 2 — it has
+/// been answered once, which is what box 1 is waiting to find out.
+///
+/// The interval is `N || ' days'` with no leading `+`: SQLite takes the sign from the
+/// number, and `+N days` is the trap `store_auth_session` hit.
+pub async fn grade_card(
+    pool: &SqlitePool,
+    user_id: i64,
+    card_id: &str,
+    correct: bool,
+) -> Result<(i64, String), AppError> {
+    Ok(sqlx::query_as(
+        "INSERT INTO card_reviews (user_id, card_id, box, due_at)
+         VALUES (?1, ?2, ?3, datetime('now', (1 << (?3 - 1)) || ' days'))
+         ON CONFLICT (user_id, card_id) DO UPDATE SET
+             box = CASE WHEN ?4 THEN MIN(box + 1, ?5) ELSE 1 END,
+             due_at = datetime('now', (1 << (CASE WHEN ?4 THEN MIN(box + 1, ?5) ELSE 1 END - 1))
+                                      || ' days')
+         RETURNING box, due_at",
+    )
+    .bind(user_id)
+    .bind(card_id)
+    .bind(if correct { 2_i64 } else { 1 })
+    .bind(correct)
+    .bind(TOP_BOX)
+    .fetch_one(pool)
+    .await?)
+}
+
 // --- discussion ---------------------------------------------------------------
 
 /// A post as the index shows it. No `body`: a hundred posts of ten thousand characters is
@@ -1212,6 +1264,64 @@ mod tests {
 
         set_concept_read(&pool, alice, "caching", false).await.unwrap();
         assert!(list_concept_reads(&pool, alice).await.unwrap().is_empty());
+    }
+
+    /// Days from now until `due_at`, as SQLite itself measures it.
+    async fn days_until(pool: &SqlitePool, due_at: &str) -> f64 {
+        let (d,): (f64,) = sqlx::query_as("SELECT julianday(?) - julianday('now')")
+            .bind(due_at)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        d
+    }
+
+    #[tokio::test]
+    async fn grading_walks_the_leitner_boxes_and_a_miss_starts_over() {
+        let pool = connect(":memory:").await.unwrap();
+        let u = user(&pool, "a@example.com").await;
+
+        // New and right lands in box 2; each further hit doubles the wait, capped at 16 days.
+        for (want_box, want_days) in [(2, 2.0), (3, 4.0), (4, 8.0), (5, 16.0), (5, 16.0)] {
+            let (b, due) = grade_card(&pool, u, "caching:0", true).await.unwrap();
+            assert_eq!(b, want_box);
+            assert!((days_until(&pool, &due).await - want_days).abs() < 0.01, "box {b}: {due}");
+        }
+
+        let (b, due) = grade_card(&pool, u, "caching:0", false).await.unwrap();
+        assert_eq!(b, 1, "a miss goes back to box 1 from anywhere");
+        assert!((days_until(&pool, &due).await - 1.0).abs() < 0.01);
+
+        let (b, _) = grade_card(&pool, u, "caching:1", false).await.unwrap();
+        assert_eq!(b, 1, "a new card that is missed starts in box 1");
+
+        // Nothing is due yet — every interval is at least a day — until time passes.
+        assert!(card_schedule(&pool, u).await.unwrap().iter().all(|(_, due)| !due));
+        sqlx::query("UPDATE card_reviews SET due_at = datetime('now', '-1 minutes') WHERE card_id = ?")
+            .bind("caching:1")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let schedule = card_schedule(&pool, u).await.unwrap();
+        assert_eq!(schedule[0], ("caching:1".to_string(), true), "overdue sorts first");
+        assert_eq!(schedule.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn one_users_schedule_is_invisible_to_another() {
+        let pool = connect(":memory:").await.unwrap();
+        let alice = user(&pool, "alice@example.com").await;
+        let bob = user(&pool, "bob@example.com").await;
+
+        grade_card(&pool, alice, "caching:0", true).await.unwrap();
+        grade_card(&pool, alice, "caching:0", true).await.unwrap();
+        assert!(card_schedule(&pool, bob).await.unwrap().is_empty());
+
+        // Bob grading the same card starts his own row rather than moving Alice's.
+        let (b, _) = grade_card(&pool, bob, "caching:0", false).await.unwrap();
+        assert_eq!(b, 1);
+        let (b, _) = grade_card(&pool, alice, "caching:0", true).await.unwrap();
+        assert_eq!(b, 4, "alice's box was untouched by bob's miss");
     }
 
     #[tokio::test]
