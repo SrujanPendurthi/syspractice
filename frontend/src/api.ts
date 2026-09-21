@@ -6,6 +6,7 @@ import type {
   Match,
   Post,
   PostComment,
+  PostSort,
   PostSummary,
   Scenario,
   ScenarioProgress,
@@ -96,8 +97,8 @@ export const markRead = (id: string, read: boolean) =>
 // --- discussion --------------------------------------------------------------
 
 /** Readable signed out. `scenario` narrows the index to one problem's threads. */
-export const listPosts = (scenario?: string) =>
-  send(`/api/posts${scenario ? `?scenario=${encodeURIComponent(scenario)}` : ''}`).then(
+export const listPosts = (scenario: string, sort: PostSort) =>
+  send(`/api/posts?${new URLSearchParams({ sort, ...(scenario && { scenario }) })}`).then(
     json<PostSummary[]>,
   );
 
@@ -110,8 +111,9 @@ export const createPost = (title: string, body: string, scenarioId: string | nul
 export const deletePost = (id: number) =>
   send(`/api/posts/${id}`, { method: 'DELETE' }).then(json<{ deleted: number }>);
 
-export const createComment = (postId: number, body: string) =>
-  post(`/api/posts/${postId}/comments`, { body }).then(json<{ id: number }>);
+/** `parentId` makes it a reply; null is a top-level comment. */
+export const createComment = (postId: number, body: string, parentId: number | null) =>
+  post(`/api/posts/${postId}/comments`, { body, parentId }).then(json<{ id: number }>);
 
 export const deleteComment = (id: number) =>
   send(`/api/comments/${id}`, { method: 'DELETE' }).then(json<{ deleted: number }>);

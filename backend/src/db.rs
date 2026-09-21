@@ -8,7 +8,7 @@
 //! caller afterwards. An ownership check a handler can forget to write is an ownership
 //! check that will eventually not be written.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{FromRow, SqlitePool};
 
@@ -502,6 +502,12 @@ pub struct Post {
 #[serde(rename_all = "camelCase")]
 pub struct Comment {
     pub id: i64,
+    /// `None` for a top-level comment.
+    pub parent_id: Option<i64>,
+    /// A removed comment that still has live replies comes back as a placeholder: empty
+    /// `body`, `author` and `created_at`, `author_id` 0, so the thread keeps its shape without the
+    /// removed text or its author reaching anybody.
+    pub deleted: bool,
     pub body: String,
     pub author: String,
     pub author_id: i64,
@@ -512,9 +518,10 @@ pub struct Comment {
 /// the same reason progress is derived: a counter needs a second write on every vote and
 /// is wrong forever the one time that write is lost.
 ///
-/// ponytail: correlated subqueries and newest-first. Both are fine while a page of posts
-/// is a page of posts; if the index gets slow, that is the moment for a ranking column,
-/// not before.
+/// ponytail: correlated subqueries, and a hot ranking computed for every live post on
+/// every read — it depends on `now`, so no index can serve it. Fine while there are
+/// hundreds of posts; if the index gets slow, that is the moment for a stored ranking
+/// refreshed on vote, not before.
 const POST_COLUMNS: &str = "
     p.id, p.scenario_id, p.title, p.created_at,
     u.display_name AS author,
@@ -522,20 +529,57 @@ const POST_COLUMNS: &str = "
     COALESCE((SELECT SUM(value) FROM post_votes WHERE post_id = p.id), 0)        AS score,
     COALESCE((SELECT value FROM post_votes WHERE post_id = p.id AND user_id = ?1), 0) AS my_vote";
 
+/// How the index is ordered. `Hot` is the default: with no votes cast it orders exactly
+/// as `New` does, so a quiet board looks the same either way, and it only diverges once
+/// somebody has voted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PostSort {
+    #[default]
+    Hot,
+    New,
+}
+
+/// `max(score + 1, 0.25) / (age_hours + 2)^1.5`, the Hacker News shape. The `+ 1` is
+/// the author's own implicit vote: without it a fresh post at 0 sorts below every post
+/// that ever got a single upvote, however old. The floor keeps the numerator positive —
+/// at zero or below, one early downvote would bury a post under everything forever, and
+/// a negative numerator shrinking with age makes older posts rank *higher*. Below the
+/// floor every post simply decays by age, like the rest.
+///
+/// The bundled SQLite is built without `SQLITE_ENABLE_MATH_FUNCTIONS`, so there is no
+/// `pow`. With the numerator positive, squaring the whole thing is monotonic, so this
+/// orders by `n² / (age + 2)^3` — the same order from nothing but `*` and `/`.
+const HOT: &str = "MAX(score + 1.0, 0.25) * MAX(score + 1.0, 0.25)
+    / ((julianday('now') - julianday(created_at)) * 24 + 2)
+    / ((julianday('now') - julianday(created_at)) * 24 + 2)
+    / ((julianday('now') - julianday(created_at)) * 24 + 2)";
+
 /// `viewer` is `None` for a signed-out reader — the discussion is public to read.
 /// `scenario` filters to threads tagged with one problem.
 pub async fn list_posts(
     pool: &SqlitePool,
     viewer: Option<i64>,
     scenario: Option<&str>,
+    sort: PostSort,
 ) -> Result<Vec<PostSummary>, AppError> {
+    // `id DESC` breaks every tie, so the same rows always list in the same order — two
+    // posts in the same second cannot swap places between one read and the next.
+    let order = match sort {
+        PostSort::Hot => format!("{HOT} DESC, created_at DESC, id DESC"),
+        PostSort::New => "created_at DESC, id DESC".to_string(),
+    };
+    // Wrapped so the ORDER BY can name the summed `score` rather than repeating the
+    // subquery inside the formula.
     let sql = format!(
-        "SELECT {POST_COLUMNS},
-                (SELECT COUNT(*) FROM comments
-                 WHERE post_id = p.id AND deleted_at IS NULL) AS comments
-         FROM posts p JOIN users u ON u.id = p.user_id
-         WHERE p.deleted_at IS NULL AND (?2 IS NULL OR p.scenario_id = ?2)
-         ORDER BY p.created_at DESC LIMIT 100"
+        "SELECT * FROM (
+            SELECT {POST_COLUMNS},
+                   (SELECT COUNT(*) FROM comments
+                    WHERE post_id = p.id AND deleted_at IS NULL) AS comments
+            FROM posts p JOIN users u ON u.id = p.user_id
+            WHERE p.deleted_at IS NULL AND (?2 IS NULL OR p.scenario_id = ?2)
+         )
+         ORDER BY {order} LIMIT 100"
     );
     let rows = sqlx::query_as::<_, PostSummary>(&sql)
         .bind(viewer)
@@ -601,12 +645,29 @@ pub async fn delete_post(
     Ok(())
 }
 
+/// Flat and oldest first, each row carrying its `parent_id`; the client builds the tree.
+///
+/// `shown` is every live comment plus each of its ancestors. A removed comment comes back
+/// only when something live hangs beneath it, and then scrubbed to a placeholder in the
+/// SQL — so a reply keeps its place in the thread, and a removed comment nobody answered
+/// is simply gone, as it was before threads.
 pub async fn list_comments(pool: &SqlitePool, post_id: i64) -> Result<Vec<Comment>, AppError> {
     let rows = sqlx::query_as::<_, Comment>(
-        "SELECT c.id, c.body, c.created_at, u.display_name AS author, u.id AS author_id
+        "WITH RECURSIVE shown(id) AS (
+             SELECT id FROM comments WHERE post_id = ?1 AND deleted_at IS NULL
+             UNION
+             SELECT c.parent_id FROM comments c JOIN shown s ON c.id = s.id
+             WHERE c.parent_id IS NOT NULL
+         )
+         SELECT c.id, c.parent_id,
+                c.deleted_at IS NOT NULL                                        AS deleted,
+                CASE WHEN c.deleted_at IS NULL THEN c.created_at ELSE '' END    AS created_at,
+                CASE WHEN c.deleted_at IS NULL THEN c.body ELSE '' END          AS body,
+                CASE WHEN c.deleted_at IS NULL THEN u.display_name ELSE '' END AS author,
+                CASE WHEN c.deleted_at IS NULL THEN u.id ELSE 0 END             AS author_id
          FROM comments c JOIN users u ON u.id = c.user_id
-         WHERE c.post_id = ? AND c.deleted_at IS NULL
-         ORDER BY c.created_at LIMIT 500",
+         WHERE c.post_id = ?1 AND c.id IN shown
+         ORDER BY c.created_at, c.id LIMIT 500",
     )
     .bind(post_id)
     .fetch_all(pool)
@@ -617,22 +678,30 @@ pub async fn list_comments(pool: &SqlitePool, post_id: i64) -> Result<Vec<Commen
 /// The insert is conditional on the post being alive, so a comment cannot be attached to
 /// something already removed — the foreign key only proves the row exists, not that it is
 /// still visible.
+///
+/// A reply's `parent` has to be a live comment on this same post, checked in the same
+/// statement. The foreign key alone would accept a comment id from another thread, putting
+/// a reply somewhere its parent is not; and a removed comment must not gather new replies,
+/// or removal becomes a thread that carries on underneath a placeholder.
 pub async fn create_comment(
     pool: &SqlitePool,
     user_id: i64,
     post_id: i64,
+    parent: Option<i64>,
     body: &str,
 ) -> Result<i64, AppError> {
     let row: Option<(i64,)> = sqlx::query_as(
-        "INSERT INTO comments (post_id, user_id, body)
-         SELECT ?, ?, ?
-         WHERE EXISTS (SELECT 1 FROM posts WHERE id = ? AND deleted_at IS NULL)
+        "INSERT INTO comments (post_id, user_id, body, parent_id)
+         SELECT ?1, ?2, ?3, ?4
+         WHERE EXISTS (SELECT 1 FROM posts WHERE id = ?1 AND deleted_at IS NULL)
+           AND (?4 IS NULL OR EXISTS (
+                SELECT 1 FROM comments WHERE id = ?4 AND post_id = ?1 AND deleted_at IS NULL))
          RETURNING id",
     )
     .bind(post_id)
     .bind(user_id)
     .bind(body)
-    .bind(post_id)
+    .bind(parent)
     .fetch_optional(pool)
     .await?;
     row.map(|r| r.0).ok_or(AppError::NotFound)
@@ -1246,7 +1315,7 @@ mod tests {
 
         delete_post(&pool, &mod_, post).await.unwrap();
         assert!(get_post(&pool, None, post).await.is_err(), "a removed post is still readable");
-        assert!(list_posts(&pool, None, None).await.unwrap().is_empty());
+        assert!(list_posts(&pool, None, None, PostSort::New).await.unwrap().is_empty());
 
         // Deleting twice is not a way to discover that something existed.
         assert!(delete_post(&pool, &mod_, post).await.is_err());
@@ -1266,11 +1335,11 @@ mod tests {
         assert_eq!(set_post_vote(&pool, b.id, post, 1).await.unwrap(), 0);
         assert_eq!(set_post_vote(&pool, a.id, post, 0).await.unwrap(), 1);
 
-        let listed = list_posts(&pool, Some(b.id), None).await.unwrap();
+        let listed = list_posts(&pool, Some(b.id), None, PostSort::New).await.unwrap();
         assert_eq!(listed[0].score, 1);
         assert_eq!(listed[0].my_vote, 1, "the viewer's own vote did not come back");
         assert_eq!(
-            list_posts(&pool, None, None).await.unwrap()[0].my_vote,
+            list_posts(&pool, None, None, PostSort::New).await.unwrap()[0].my_vote,
             0,
             "a signed-out reader must not inherit somebody's vote",
         );
@@ -1282,18 +1351,18 @@ mod tests {
         let a = create_user(&pool, "a@example.com", "A", "x").await.unwrap();
         let post = create_post(&pool, a.id, Some("url-shortener"), "Title", "Body").await.unwrap();
 
-        create_comment(&pool, a.id, post, "first").await.unwrap();
-        let orphan = create_comment(&pool, a.id, post, "second").await.unwrap();
+        create_comment(&pool, a.id, post, None, "first").await.unwrap();
+        let orphan = create_comment(&pool, a.id, post, None, "second").await.unwrap();
         delete_comment(&pool, &a, orphan).await.unwrap();
         assert_eq!(list_comments(&pool, post).await.unwrap().len(), 1);
-        assert_eq!(list_posts(&pool, None, None).await.unwrap()[0].comments, 1);
+        assert_eq!(list_posts(&pool, None, None, PostSort::New).await.unwrap()[0].comments, 1);
 
         // The foreign key proves the row exists; it says nothing about whether the post is
         // still visible, which is the check that actually matters here.
         delete_post(&pool, &a, post).await.unwrap();
-        assert!(create_comment(&pool, a.id, post, "too late").await.is_err());
+        assert!(create_comment(&pool, a.id, post, None, "too late").await.is_err());
         assert!(set_post_vote(&pool, a.id, post, 1).await.is_err());
-        assert!(create_comment(&pool, a.id, 9999, "no such post").await.is_err());
+        assert!(create_comment(&pool, a.id, 9999, None, "no such post").await.is_err());
     }
 
     #[tokio::test]
@@ -1303,11 +1372,160 @@ mod tests {
         create_post(&pool, a.id, Some("url-shortener"), "Tagged", "Body").await.unwrap();
         create_post(&pool, a.id, None, "Untagged", "Body").await.unwrap();
 
-        assert_eq!(list_posts(&pool, None, None).await.unwrap().len(), 2, "no filter means everything");
-        let tagged = list_posts(&pool, None, Some("url-shortener")).await.unwrap();
+        assert_eq!(list_posts(&pool, None, None, PostSort::New).await.unwrap().len(), 2, "no filter means everything");
+        let tagged = list_posts(&pool, None, Some("url-shortener"), PostSort::New).await.unwrap();
         assert_eq!(tagged.len(), 1);
         assert_eq!(tagged[0].title, "Tagged");
-        assert!(list_posts(&pool, None, Some("chat-app")).await.unwrap().is_empty());
+        assert!(list_posts(&pool, None, Some("chat-app"), PostSort::New).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_reply_only_attaches_to_a_live_comment_on_the_same_post() {
+        let pool = connect(":memory:").await.unwrap();
+        let a = create_user(&pool, "a@example.com", "A", "x").await.unwrap();
+        let here = create_post(&pool, a.id, None, "Here", "Body").await.unwrap();
+        let there = create_post(&pool, a.id, None, "There", "Body").await.unwrap();
+        let top = create_comment(&pool, a.id, here, None, "top").await.unwrap();
+        let elsewhere = create_comment(&pool, a.id, there, None, "elsewhere").await.unwrap();
+
+        create_comment(&pool, a.id, here, Some(top), "reply").await.unwrap();
+        // The foreign key accepts this — the row exists. It is on another post, so the
+        // reply would sit in a thread its parent is not in.
+        assert!(create_comment(&pool, a.id, here, Some(elsewhere), "stray").await.is_err());
+        assert!(create_comment(&pool, a.id, here, Some(9999), "no such parent").await.is_err());
+
+        delete_comment(&pool, &a, top).await.unwrap();
+        assert!(
+            create_comment(&pool, a.id, here, Some(top), "under a removal").await.is_err(),
+            "a removed comment is still gathering replies",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_removed_comment_with_live_replies_stays_as_a_placeholder() {
+        let pool = connect(":memory:").await.unwrap();
+        let a = create_user(&pool, "a@example.com", "A", "x").await.unwrap();
+        let post = create_post(&pool, a.id, None, "Title", "Body").await.unwrap();
+        let root = create_comment(&pool, a.id, post, None, "root").await.unwrap();
+        let mid = create_comment(&pool, a.id, post, Some(root), "mid").await.unwrap();
+        let leaf = create_comment(&pool, a.id, post, Some(mid), "leaf").await.unwrap();
+        let lonely = create_comment(&pool, a.id, post, None, "nobody answered").await.unwrap();
+
+        let listed = list_comments(&pool, post).await.unwrap();
+        let parents: Vec<_> = listed.iter().map(|c| (c.id, c.parent_id)).collect();
+        assert_eq!(parents, vec![(root, None), (mid, Some(root)), (leaf, Some(mid)), (lonely, None)]);
+
+        // Both ancestors of a live reply removed: both come back, scrubbed, so the leaf
+        // still has a chain to hang from. The unanswered one simply goes.
+        delete_comment(&pool, &a, root).await.unwrap();
+        delete_comment(&pool, &a, mid).await.unwrap();
+        delete_comment(&pool, &a, lonely).await.unwrap();
+        let listed = list_comments(&pool, post).await.unwrap();
+        assert_eq!(listed.iter().map(|c| c.id).collect::<Vec<_>>(), vec![root, mid, leaf]);
+        for c in &listed[..2] {
+            assert!(c.deleted);
+            assert!(
+                c.body.is_empty() && c.author.is_empty() && c.created_at.is_empty() && c.author_id == 0,
+                "a removed comment leaked something: {c:?}",
+            );
+        }
+        assert!(!listed[2].deleted);
+        assert_eq!(list_posts(&pool, None, None, PostSort::New).await.unwrap()[0].comments, 1);
+
+        // Once the last live reply goes, nothing is left worth a placeholder.
+        delete_comment(&pool, &a, leaf).await.unwrap();
+        assert!(list_comments(&pool, post).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn hot_weighs_votes_against_age() {
+        let pool = connect(":memory:").await.unwrap();
+        let voters = [
+            create_user(&pool, "a@example.com", "A", "x").await.unwrap(),
+            create_user(&pool, "b@example.com", "B", "x").await.unwrap(),
+            create_user(&pool, "c@example.com", "C", "x").await.unwrap(),
+            create_user(&pool, "d@example.com", "D", "x").await.unwrap(),
+            create_user(&pool, "e@example.com", "E", "x").await.unwrap(),
+        ];
+        let post_aged = |title: &'static str, hours: i64, votes: usize| {
+            let pool = pool.clone();
+            let voters = voters.clone();
+            async move {
+                let id = create_post(&pool, voters[0].id, None, title, "Body").await.unwrap();
+                sqlx::query("UPDATE posts SET created_at = datetime('now', ? || ' hours') WHERE id = ?")
+                    .bind(-hours)
+                    .bind(id)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                for v in &voters[..votes] {
+                    set_post_vote(&pool, v.id, id, 1).await.unwrap();
+                }
+            }
+        };
+
+        // Equal score: the newer one is hotter.
+        post_aged("old, one vote", 10, 1).await;
+        post_aged("new, one vote", 1, 1).await;
+        // Much higher score beats slightly newer: 6/7^1.5 = 0.32 against 2/5^1.5 = 0.18.
+        post_aged("five votes, five hours", 5, 5).await;
+        post_aged("one vote, three hours", 3, 1).await;
+        // Nothing yet, but brand new: the implicit author vote puts it above a day-old
+        // post with votes, rather than below every post that has ever been upvoted.
+        post_aged("fresh", 0, 0).await;
+        post_aged("yesterday, five votes", 24, 5).await;
+
+        let hot: Vec<_> = list_posts(&pool, None, None, PostSort::Hot)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|p| p.title)
+            .collect();
+        let at = |t: &str| hot.iter().position(|h| h == t).unwrap();
+        assert!(at("new, one vote") < at("old, one vote"), "{hot:?}");
+        assert!(at("five votes, five hours") < at("one vote, three hours"), "{hot:?}");
+        assert!(at("fresh") < at("yesterday, five votes"), "{hot:?}");
+
+        // One early downvote does not bury a post forever: it still decays by age like
+        // everything else, so fresh at -1 beats a day old at 0. And below zero time still
+        // runs forwards — the newer of two equally disliked posts ranks higher.
+        post_aged("fresh, one downvote", 0, 0).await;
+        post_aged("a day old, no votes", 24, 0).await;
+        post_aged("older, minus two", 12, 0).await;
+        post_aged("newer, minus two", 2, 0).await;
+        for (title, n) in [("fresh, one downvote", 1), ("older, minus two", 2), ("newer, minus two", 2)] {
+            let id: (i64,) = sqlx::query_as("SELECT id FROM posts WHERE title = ?")
+                .bind(title)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            for v in &voters[..n] {
+                set_post_vote(&pool, v.id, id.0, -1).await.unwrap();
+            }
+        }
+        let hot: Vec<_> = list_posts(&pool, None, None, PostSort::Hot)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|p| p.title)
+            .collect();
+        let at = |t: &str| hot.iter().position(|h| h == t).unwrap();
+        assert!(at("fresh, one downvote") < at("a day old, no votes"), "{hot:?}");
+        assert!(at("newer, minus two") < at("older, minus two"), "{hot:?}");
+
+        // And `new` ignores votes entirely.
+        let new = list_posts(&pool, None, None, PostSort::New).await.unwrap();
+        let titles: Vec<_> = new.iter().map(|p| p.title.as_str()).collect();
+        assert!(titles[..2].iter().all(|t| t.starts_with("fresh")), "{titles:?}");
+        assert!(titles[8..].iter().all(|t| t.contains("day")), "{titles:?}");
+    }
+
+    #[tokio::test]
+    async fn the_bundled_sqlite_has_no_pow_which_is_why_hot_squares() {
+        // If this starts passing, `HOT` could be written as the formula it stands for.
+        let pool = connect(":memory:").await.unwrap();
+        let err = sqlx::query("SELECT pow(2, 1.5)").execute(&pool).await.unwrap_err();
+        assert!(err.to_string().contains("no such function"), "{err}");
     }
 
 

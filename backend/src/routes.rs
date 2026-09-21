@@ -379,6 +379,9 @@ const MAX_COMMENT: usize = 4_000;
 struct PostFilter {
     /// `?scenario=url-shortener` narrows the index to threads tagged with one problem.
     scenario: Option<String>,
+    /// `?sort=new` for newest first. Absent means hot; anything else is a 400.
+    #[serde(default)]
+    sort: db::PostSort,
 }
 
 /// Readable signed out, like the problem list and the concepts. `myVote` comes back 0 for
@@ -389,7 +392,8 @@ async fn list_posts(
     AppQuery(filter): AppQuery<PostFilter>,
 ) -> Result<impl IntoResponse, AppError> {
     let posts =
-        db::list_posts(&s.pool, user.map(|u| u.id), filter.scenario.as_deref()).await?;
+        db::list_posts(&s.pool, user.map(|u| u.id), filter.scenario.as_deref(), filter.sort)
+            .await?;
     Ok(Json(posts))
 }
 
@@ -455,8 +459,12 @@ async fn delete_post(
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CreateComment {
     body: String,
+    /// The comment this answers. Absent for a top-level comment. Whether it is a live
+    /// comment on this post is decided in the INSERT, not here.
+    parent_id: Option<i64>,
 }
 
 async fn create_comment(
@@ -469,7 +477,7 @@ async fn create_comment(
     s.comment_throttle.check(&key)?;
 
     let text = check_text(&body.body, MAX_COMMENT, "a comment has to say something, and stay under 4,000 characters")?;
-    let id = db::create_comment(&s.pool, user.id, post_id, &text).await?;
+    let id = db::create_comment(&s.pool, user.id, post_id, body.parent_id, &text).await?;
     s.comment_throttle.record(&key);
     Ok(Json(json!({ "id": id })))
 }
