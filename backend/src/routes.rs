@@ -289,16 +289,23 @@ async fn critique(
         .await?
         .ok_or(AppError::QuotaExceeded(s.critique_quota))?;
 
-    let system = critic::system_prompt(scenario.track, body.level, body.stage);
+    // After the reservation, so the extraction is part of the one unit this request costs;
+    // before the stream, so the critique can be told the answers. Empty for most stages.
+    let (checks, runner_answered) = critic::check_arithmetic(&s.runner, body.stage, &body.notes).await;
+    let system = critic::checked_system_prompt(scenario.track, body.level, body.stage, &checks);
     let prompt = critic::build_prompt(scenario, &body.topology, &body.notes, body.level);
 
-    let stream = match critic::stream_critique(&s.runner, system, prompt).await {
+    // The verdicts reach the candidate as the critique's opening lines, written by code.
+    let stream = match critic::stream_critique(&s.runner, system, prompt, checks.report()).await {
         Ok(stream) => stream,
         Err(e) => {
             // No GPU time was spent, so charging for it would be charging for our own
-            // outage. Once the stream starts the charge stands, because closing the tab
-            // does not give the seconds back.
-            db::release_critique(&s.pool, reservation).await?;
+            // outage — unless the arithmetic extraction already ran, which was not free.
+            // Once the stream starts the charge stands, because closing the tab does not
+            // give the seconds back.
+            if !runner_answered {
+                db::release_critique(&s.pool, reservation).await?;
+            }
             return Err(e);
         }
     };
