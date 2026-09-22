@@ -56,6 +56,10 @@ elif command -v ollama >/dev/null 2>&1; then
   # so this env var on the server is the only lever.
   export OLLAMA_CONTEXT_LENGTH="${OLLAMA_CONTEXT_LENGTH:-16384}"
 
+  # Reasoning off: arithmetic is checked in code now, and MiniCPM5-2B's unbounded thinking
+  # took minutes per critique. `SYSPRACTICE_REASONING_EFFORT= ./dev` turns it back on.
+  export SYSPRACTICE_REASONING_EFFORT="${SYSPRACTICE_REASONING_EFFORT-none}"
+
   # Reuse an already-running daemon rather than starting a second one; only tear down
   # an instance this script owns.
   if ! curl -sf -m 2 "${LLAMA_SERVER_URL}/api/tags" >/dev/null 2>&1; then
