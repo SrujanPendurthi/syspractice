@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::convert::Infallible;
 
+use crate::calc;
 use crate::error::AppError;
 use crate::scenarios::{Level, Scenario, Track};
 use crate::topology::Topology;
@@ -173,6 +174,49 @@ load, and the trade-off they made without naming it. Assume the happy path alrea
     }
 }
 
+impl Stage {
+    /// `focus`, for a critique whose arithmetic code has already checked and shown.
+    ///
+    /// The estimation text orders the model to recompute every number, and the ML texts
+    /// order it to write the baseline line. Both are right without checks and wrong with
+    /// them: told to trust the checked figures, MiniCPM5-2B still redid the sums code could
+    /// not check and called a correct 400M wrong, three runs out of three. So with checks,
+    /// the model grades assumptions and gaps and delivers no arithmetic verdict at all.
+    fn checked_focus(self, track: Track) -> &'static str {
+        match (track, self) {
+            (Track::Classic, Stage::Estimation) => "\
+Grade only the estimation in their notes. Are the assumptions believable for this problem — \
+how many users, how many requests each, how big each object is, how long it is kept? Which \
+numbers that matter here have they not worked out at all: peak QPS, storage over the \
+retention period, bandwidth? A missing number is a finding. Do not recompute anything and \
+do not call any figure right or wrong; if a figure has no working, ask them to show it. Do \
+not review the diagram's structure.",
+            (Track::Ml, Stage::Estimation) => "\
+Grade only the estimation in their notes. Are the assumptions believable — how many \
+labelled examples exist and how fast they arrive, the storage for features and embeddings, \
+inference queries per second, what the model costs to serve? Watch for a training set \
+counted in rows when the cost is driven by tokens or images, and an inference budget quoted \
+per request when the hardware is billed per GPU-hour. A missing number is a finding. Do not \
+recompute anything and do not call any figure right or wrong; if a figure has no working, \
+ask them to show it. Do not review the diagram's structure.",
+            // Both open with a paragraph ordering the baseline line, which code now writes.
+            (_, Stage::Modeling | Stage::EvaluationAndMonitoring) => {
+                let focus = self.focus(track);
+                focus.split_once("\n\n").map_or(focus, |(_, rest)| rest)
+            }
+            (
+                _,
+                Stage::Requirements
+                | Stage::DataAndFeatures
+                | Stage::Serving
+                | Stage::HighLevel
+                | Stage::DeepDive
+                | Stage::Bottlenecks,
+            ) => self.focus(track),
+        }
+    }
+}
+
 /// The interviewer's standing rules, per track. Constant across stages and levels — the
 /// parts that vary are appended by `system_prompt`.
 ///
@@ -180,6 +224,15 @@ load, and the trade-off they made without naming it. Assume the happy path alrea
 /// systems interviewer wants the component that dies and what breaks downstream; an ML
 /// interviewer wants the baseline you beat and the class balance behind the number you
 /// just quoted.
+/// The standing rule each track has that orders the model to do arithmetic itself. Left
+/// out when code has already done it: kept, it contradicts "do not say whether any number is
+/// right or wrong" from the same prompt, and a 2B model follows whichever it read last.
+const ARITHMETIC_RULES: [&str; 2] = [
+    "\n- If a back-of-the-envelope number contradicts the design, do the arithmetic and show it.",
+    "\n- Never credit a quoted accuracy on its own. Compare it with what a model that always \
+  predicts the most common class would score, and state that figure next to theirs.",
+];
+
 fn rules(track: Track) -> &'static str {
     match track {
         Track::Classic => "\
@@ -241,6 +294,27 @@ Rules:
 /// canvas goes quiet, so a four-section answer per stage would never finish before the
 /// next edit aborts it.
 pub fn system_prompt(track: Track, level: Level, stage: Stage) -> String {
+    prompt_with_focus(track, level, stage, stage.focus(track), false)
+}
+
+/// `system_prompt`, for a critique that `check_arithmetic` found something to check in.
+pub fn checked_system_prompt(track: Track, level: Level, stage: Stage, checks: &calc::Checks) -> String {
+    if checks.is_empty() {
+        // Where code could not work out a baseline, the model must not either. Left with the
+        // template, it was handed "positives are 0.5%, recall 90%, precision 40%" and wrote
+        // "100 - 0.005 = 99.995%. Your accuracy: 40%" — precision taken for accuracy, and
+        // the fraction slip back.
+        if matches!(stage, Stage::Modeling | Stage::EvaluationAndMonitoring) {
+            return prompt_with_focus(track, level, stage, stage.checked_focus(track), true)
+                + "\n\nDo not work out or quote any baseline or accuracy figure yourself. If they \
+give an accuracy without the share of cases that are positive, ask them for that share.";
+        }
+        return system_prompt(track, level, stage);
+    }
+    prompt_with_focus(track, level, stage, stage.checked_focus(track), true) + &checks.instruction()
+}
+
+fn prompt_with_focus(track: Track, level: Level, stage: Stage, focus: &str, checked: bool) -> String {
     let stages = track.stages();
     // A stage from another track is a bug upstream — the handler validates this — but the
     // prompt still has to say something rather than panic mid-interview.
@@ -254,11 +328,15 @@ pub fn system_prompt(track: Track, level: Level, stage: Stage) -> String {
         "{}\n\n{}\n\nSTAGE {position} of {} — {}. {}\n\nAnswer in under 150 words, then ask \
 exactly one question. No headings, no bullet lists longer than three items. Say nothing \
 about any other stage.",
-        rules(track),
+        if checked {
+            ARITHMETIC_RULES.iter().fold(rules(track).to_string(), |r, rule| r.replace(rule, ""))
+        } else {
+            rules(track).to_string()
+        },
         level.calibration(),
         stages.len(),
         stage.heading(),
-        stage.focus(track),
+        focus,
     )
 }
 
@@ -329,6 +407,7 @@ pub struct Runner {
     /// does not know the field never sees it. `none` switches a reasoning model's thinking
     /// phase off on Ollama. Note `think: false` does *not*: Ollama's OpenAI-compatible
     /// endpoint ignores it without complaint, which is an easy way to measure nothing.
+    /// `check_arithmetic` sends `none` whatever this is set to: it is a copying job.
     pub reasoning_effort: Option<String>,
 }
 
@@ -354,10 +433,13 @@ impl Runner {
     }
 }
 
+/// `preface` goes out as the answer's first `token` frame, ahead of the model's: lines
+/// written by code that the model is told the candidate has already read.
 pub async fn stream_critique(
     runner: &Runner,
     system: String,
     prompt: String,
+    preface: String,
 ) -> Result<impl Stream<Item = Result<Event, Infallible>>, AppError> {
     let url = runner.endpoint();
 
@@ -377,6 +459,10 @@ pub async fn stream_critique(
     Ok(async_stream::stream! {
         let mut bytes = resp.bytes_stream();
         let mut buf = String::new();
+
+        if !preface.is_empty() {
+            yield Ok::<Event, Infallible>(Event::default().event("token").data(encode(&preface)));
+        }
 
         while let Some(chunk) = bytes.next().await {
             let Ok(chunk) = chunk else { break };
@@ -523,13 +609,20 @@ pub enum Winner {
 /// written once, stored, and read by both players — streaming it would mean two model
 /// calls producing two different answers to the same question.
 pub async fn complete(runner: &Runner, system: String, prompt: String) -> Result<String, AppError> {
-    let url = runner.endpoint();
-
     // Lower temperature than the critique's 0.4: the same two designs should not change
     // places between one grading and the next.
+    send(runner, runner.body(false, 0.2, system, prompt), true).await
+}
+
+/// Post one non-streaming request and return the answer's text. `or_reasoning` accepts a
+/// reasoning model's `reasoning` field when `content` is empty — right for a verdict, wrong
+/// for an extraction, where chain of thought is not the JSON that was asked for.
+async fn send(runner: &Runner, body: serde_json::Value, or_reasoning: bool) -> Result<String, AppError> {
+    let url = runner.endpoint();
+
     let body: serde_json::Value = reqwest::Client::new()
         .post(&url)
-        .json(&runner.body(false, 0.2, system, prompt))
+        .json(&body)
         .send()
         .await
         .map_err(|_| AppError::Runner(url.clone()))?
@@ -545,7 +638,7 @@ pub async fn complete(runner: &Runner, system: String, prompt: String) -> Result
     let text = choice["content"]
         .as_str()
         .filter(|t| !t.trim().is_empty())
-        .or_else(|| choice["reasoning"].as_str())
+        .or_else(|| choice["reasoning"].as_str().filter(|_| or_reasoning))
         .unwrap_or_default()
         .trim()
         .to_string();
@@ -554,6 +647,87 @@ pub async fn complete(runner: &Runner, system: String, prompt: String) -> Result
         return Err(AppError::Runner(format!("{url} (empty answer)")));
     }
     Ok(text)
+}
+
+// --- checked arithmetic --------------------------------------------------------
+
+/// The extraction's instructions. It copies and never computes: asked to expand `100M` to
+/// digits, MiniCPM5-2B wrote `1000000000`, and asked for `e6` it read `500B` as `500e3`.
+/// Copying the notes' own text is the one thing it does reliably, so suffixes and the
+/// bytes-or-billions question are left to `calc`.
+const EXTRACT: &str = r#"You copy the arithmetic out of a candidate's interview notes as JSON. You do not check it, judge it, or fix it.
+
+Answer with one JSON object and nothing else:
+{"calculations": [{"expression": "...", "claimed": "...", "unit": "..."}], "positive_rate": "...", "accuracy": "..."}
+
+calculations: one entry for every place the notes multiply, divide, add or subtract numbers to get a result they wrote down. Skip ratios such as 100:1 and anything with no result.
+- expression: the inputs they used, joined with * / + - and parentheses. Copy each number exactly as they wrote it, with its K, M, B, T, KB, MB, GB, TB or bytes suffix; do not convert or expand it. Drop words that are not numbers. Include every factor they multiplied by, even one they only wrote in words: "a year" is 365 days, "per second" from a daily figure is / 86400.
+- claimed: the result exactly as they wrote it, copied character for character with its unit, such as "7GB" or "230/s". Use "" if they wrote no result.
+- unit: "bytes" if the result is a size in bytes, otherwise "count".
+
+positive_rate: the percentage of positive cases (spam, fraud, clicks, etc.) exactly as written, with its % sign, such as "3%". Use "" if none is stated.
+accuracy: the model accuracy exactly as written, with its % sign. Use "" if none is stated.
+
+If the notes contain none of these, answer {"calculations": [], "positive_rate": "", "accuracy": ""}."#;
+
+/// Long enough for a cold model load on a warm runner, short enough that a hung one costs
+/// the critique twenty seconds rather than the whole request.
+const EXTRACT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Which stages grade a number the model cannot compute on its own. The rest skip the
+/// extraction and pay no latency for it.
+fn wanted(stage: Stage) -> Option<calc::Wanted> {
+    match stage {
+        Stage::Estimation => Some(calc::Wanted::Calculations),
+        Stage::Modeling | Stage::EvaluationAndMonitoring => Some(calc::Wanted::Baseline),
+        _ => None,
+    }
+}
+
+/// Copy the candidate's arithmetic out of their notes and redo it in code.
+///
+/// Never fails: a runner that is down, slow, or answers nonsense yields no checks and the
+/// critique goes out exactly as it did before. A runner that is down fails again straight
+/// after in `stream_critique`, which is where the quota refund lives.
+///
+/// Reasoning is forced off whatever the deployment chose. This is a copying job; a thinking
+/// phase would add minutes to a call whose whole point is to let the critique skip one.
+///
+/// The flag says whether the runner answered the extraction. If it did, GPU time was spent,
+/// and the caller must not refund the quota when the critique's own call then fails.
+pub async fn check_arithmetic(runner: &Runner, stage: Stage, notes: &str) -> (calc::Checks, bool) {
+    let none = (calc::Checks::default(), false);
+    let Some(wanted) = wanted(stage) else { return none };
+    // Free to rule out, and a model call is not: no digit is no sum, and a baseline needs
+    // two percentages.
+    let possible = match wanted {
+        calc::Wanted::Calculations => notes.bytes().any(|b| b.is_ascii_digit()),
+        calc::Wanted::Baseline => notes.matches('%').count() >= 2,
+    };
+    if !possible {
+        return none;
+    }
+    // Sums written out with an `=` need no model, and do not depend on one copying digits
+    // it has been measured to rewrite. The extraction is for the ones written in prose.
+    //
+    // Notes that write `=` at all are left to the scan entirely. A sum it declined — bits, a
+    // unit of time, a name like `H100` — is declined on purpose, and handed to the extraction
+    // it comes back with the words stripped: `10 Mbps * 3600 = 4.5 GB` as `10 * 3600`.
+    if wanted == calc::Wanted::Calculations && notes.contains('=') {
+        return (calc::scan(notes), false);
+    }
+
+    let runner = Runner { reasoning_effort: Some("none".into()), ..runner.clone() };
+    let mut body = runner.body(false, 0.0, EXTRACT.into(), notes.into());
+    body["max_tokens"] = json!(500);
+    // Ollama and llama-server both constrain decoding to valid JSON with this; a runner that
+    // ignores it still usually answers in JSON, and `from_extraction` copes when it does not.
+    body["response_format"] = json!({ "type": "json_object" });
+
+    match tokio::time::timeout(EXTRACT_TIMEOUT, send(&runner, body, false)).await {
+        Ok(Ok(raw)) => (calc::Checks::from_extraction(&raw, notes, wanted), true),
+        _ => none,
+    }
 }
 
 #[cfg(test)]
@@ -854,6 +1028,44 @@ mod tests {
         assert_eq!(runner.endpoint(), "http://runner/v1/chat/completions");
     }
 
+    #[test]
+    fn with_checks_the_model_gives_no_arithmetic_verdict_of_its_own() {
+        let calcs = calc::Checks::from_extraction(
+            r#"{"calculations": [{"expression": "100M * 365 * 500B", "claimed": "18GB", "unit": "bytes"}]}"#,
+            "100M * 365 * 500B = 18GB",
+            calc::Wanted::Calculations,
+        );
+        let baseline = calc::Checks::from_extraction(
+            r#"{"positive_rate": "0.5%", "accuracy": "95%"}"#,
+            "Spam is 0.5% of messages. Model is 95% accurate.",
+            calc::Wanted::Baseline,
+        );
+        assert!(!calcs.is_empty() && !baseline.is_empty());
 
-
+        for track in [Track::Classic, Track::Ml] {
+            let p = checked_system_prompt(track, Level::Senior, Stage::Estimation, &calcs);
+            assert!(!p.contains("recompute every number"), "{track:?}: {p}");
+            assert!(p.contains("Do not recompute anything") && p.contains("already been shown a check"));
+            // Without checks nothing changes.
+            let plain = checked_system_prompt(track, Level::Senior, Stage::Estimation, &calc::Checks::default());
+            assert_eq!(plain, system_prompt(track, Level::Senior, Stage::Estimation));
+        }
+        // The standing rules that order arithmetic go too — and each is really in its track's
+        // rules, or removing it by text would be silently removing nothing.
+        for (track, rule) in [(Track::Classic, ARITHMETIC_RULES[0]), (Track::Ml, ARITHMETIC_RULES[1])] {
+            assert!(rules(track).contains(rule), "{track:?}'s rule text drifted from ARITHMETIC_RULES");
+            let stage = if track == Track::Ml { Stage::Modeling } else { Stage::Estimation };
+            let checks = if track == Track::Ml { &baseline } else { &calcs };
+            let p = checked_system_prompt(track, Level::Senior, stage, checks);
+            assert!(!p.contains("do the arithmetic and show it") && !p.contains("always predicts the most common"), "{p}");
+            assert!(system_prompt(track, Level::Senior, stage).contains(rule.trim_start()));
+        }
+        for stage in [Stage::Modeling, Stage::EvaluationAndMonitoring] {
+            let unchecked = checked_system_prompt(Track::Ml, Level::Senior, stage, &calc::Checks::default());
+            assert!(!unchecked.contains("Always-no baseline: 100 -") && unchecked.contains("Do not work out"), "{unchecked}");
+            let p = checked_system_prompt(Track::Ml, Level::Senior, stage, &baseline);
+            assert!(!p.contains("Always-no baseline: 100 -"), "{stage:?} still orders the template: {p}");
+            assert!(p.contains("Grade only") && p.contains("That is settled"));
+        }
+    }
 }
