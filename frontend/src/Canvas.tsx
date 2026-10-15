@@ -265,6 +265,8 @@ export function Canvas({
         elementsSelectable={!readOnly}
         deleteKeyCode={readOnly ? null : ['Backspace', 'Delete']}
         fitView
+        // Same cap as FitOnLoad: a two-node read-only board otherwise fits at ~1.6x.
+        fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
         // React Flow's default floor is 0.5. The canvas is the column left over after the
         // sidebar and the critique panel, which on a laptop-width window is ~350px — and an
         // eight-node ML diagram needs about 0.3 to fit in that. At 0.5 `fitView` was being
